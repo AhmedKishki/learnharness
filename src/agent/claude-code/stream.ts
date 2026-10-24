@@ -36,8 +36,9 @@ type RunClaudeOptions = { cwd: string; env: NodeJS.ProcessEnv };
 
 export type RunClaude = (args: string[], options: RunClaudeOptions) => ChildProcessWithoutNullStreams | null;
 
-// A held MCP call lasts until pi has run every tool of the message (each capped at 30s by
-// tool-execute) and called back; this must outlast that so the CLI never times out first.
+// A held MCP call lasts until pi calls back with the tool result, which for a question tool is
+// whenever the learner answers; this must outlast the live-process idle timeout so the CLI never
+// times out first.
 const MCP_TOOL_TIMEOUT_MS = 30 * 60_000;
 
 const PRIVATE_FILE_MODE = 0o600;

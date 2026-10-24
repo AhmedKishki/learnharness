@@ -1,7 +1,8 @@
 export type LiveProcess = { toolCallIds: string[]; kill(): void };
 
-// pi runs a message's tools (each capped at 30s by tool-execute) and calls back well within this;
-// it stays under MCP_TOOL_TIMEOUT so an orphaned process is killed before the CLI gives up on its own.
+// Tools usually call back within seconds, but a question tool holds its call until the learner
+// answers. Past this, the process is killed and the answer starts a fresh one with a full replay.
+// It stays under MCP_TOOL_TIMEOUT so the process is killed before the CLI gives up on its own.
 export const LIVE_PROCESS_IDLE_TIMEOUT_MS = 10 * 60_000;
 
 /** Test seam (runner.ts's pdfModelOverride idiom). */
