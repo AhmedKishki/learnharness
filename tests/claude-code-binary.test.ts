@@ -45,7 +45,10 @@ test("windows looks for claude.cmd and claude.exe", () => {
 	assert.equal(resolveWith(["C:\\bin\\claude.cmd"], env, "win32", winHome), "C:\\bin\\claude.cmd");
 	assert.equal(resolveWith(["C:\\bin\\claude.exe"], env, "win32", winHome), "C:\\bin\\claude.exe");
 	assert.equal(resolveWith([`${winHome}\\.local\\bin\\claude.exe`], env, "win32", winHome), `${winHome}\\.local\\bin\\claude.exe`);
-	assert.equal(resolveWith([`${winHome}\\AppData\\Roaming\\npm\\claude.cmd`], env, "win32", winHome), `${winHome}\\AppData\\Roaming\\npm\\claude.cmd`);
+	assert.equal(
+		resolveWith([`${winHome}\\AppData\\Roaming\\npm\\claude.cmd`], env, "win32", winHome),
+		`${winHome}\\AppData\\Roaming\\npm\\claude.cmd`,
+	);
 	assert.equal(resolveWith(["C:\\bin\\claude"], env, "win32", winHome), null);
 });
 

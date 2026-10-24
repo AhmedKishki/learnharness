@@ -29,7 +29,14 @@ function assistant(content: AssistantMessage["content"]): AssistantMessage {
 		api: "claude-code-cli",
 		provider: "claude-code",
 		model: "opus",
-		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
 		stopReason: "stop",
 		timestamp: 0,
 	};
@@ -96,7 +103,12 @@ test("error tool results are marked as errors in the replay", () => {
 		toolResult("read", [{ type: "text", text: "ENOENT" }], true),
 		user("why?"),
 	];
-	const expected = ["[user]\nopen missing.md", '[tool call read] {"path":"missing.md"}', "[tool result read error]\nENOENT", "[user]\nwhy?"].join("\n\n");
+	const expected = [
+		"[user]\nopen missing.md",
+		'[tool call read] {"path":"missing.md"}',
+		"[tool result read error]\nENOENT",
+		"[user]\nwhy?",
+	].join("\n\n");
 	assert.deepEqual(toClaudeInput(messages).userContent, [{ type: "text", text: expected }]);
 });
 
@@ -142,5 +154,8 @@ test("thinking blocks are omitted from replay", () => {
 });
 
 test('toStreamJsonLine emits {"type":"user","message":{"role":"user","content":[...]}}', () => {
-	assert.deepEqual(JSON.parse(toStreamJsonLine([{ type: "text", text: "hi" }])), { type: "user", message: { role: "user", content: [{ type: "text", text: "hi" }] } });
+	assert.deepEqual(JSON.parse(toStreamJsonLine([{ type: "text", text: "hi" }])), {
+		type: "user",
+		message: { role: "user", content: [{ type: "text", text: "hi" }] },
+	});
 });
