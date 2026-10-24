@@ -66,7 +66,7 @@ const SLOT_META: Record<ModelSlotName, { label: string; roster: string }> = {
 const SLOT_ORDER: readonly ModelSlotName[] = ["strong", "cheap", "vision"];
 
 /** The custom endpoint's synthetic picker entry — one more provider in the
- *  Stage 1 roster, connected by a base URL + optional key (POST
+ *  Stage 1 roster, connected by a base URL + key (POST
  *  /api/custom-provider). Not part of the /api/keys plain-key roster. */
 const CUSTOM_PICKER: ProviderKeyInfo = { id: CUSTOM_PROVIDER.id, envVar: CUSTOM_PROVIDER.envVar, label: CUSTOM_PROVIDER.label };
 
@@ -160,7 +160,7 @@ export function SetupKeysBody({
 	/** The MenuShell anchor — wired by the wrapper (its triggerRef). */
 	menuAnchor: React.RefObject<HTMLDivElement | null>;
 	/** The chosen provider is the custom endpoint: a base URL field joins the
-	 *  key field (the key becomes optional — keyless local servers). All three
+		 *  key field (a key is required — local servers accept any value). All three
 	 *  optional so the plain-key callers (and tests) stay unchanged. */
 	isCustom?: boolean;
 	baseUrl?: string;
@@ -218,9 +218,9 @@ export function SetupKeysBody({
 								value={value}
 								onChange={(e) => onValue(e.target.value)}
 								onKeyDown={(e) => {
-									if (e.key === "Enter" && (isCustom ? baseUrl?.trim() : value.trim())) onSave();
+									if (e.key === "Enter" && value.trim()) onSave();
 								}}
-								placeholder={isCustom ? "API key (optional for local servers)" : "Paste key…"}
+								placeholder={isCustom ? "API key — required (any value works for local servers)" : "Paste key…"}
 								aria-label={`${provider.label} key`}
 								data-testid="setup-key-input"
 								disabled={saving}
@@ -230,7 +230,7 @@ export function SetupKeysBody({
 							<button
 								type="button"
 								onClick={onSave}
-								disabled={saving || (isCustom ? !baseUrl?.trim() : !value.trim())}
+								disabled={saving || !value.trim()}
 								data-testid="setup-key-save"
 								className="shrink-0 rounded-sm border border-border bg-background px-3 py-1.5 font-ui text-xs text-foreground transition-colors hover:border-muted-foreground/50 disabled:cursor-not-allowed disabled:opacity-40"
 							>
@@ -405,7 +405,7 @@ function OpenSetupDialog({ onClose, onDone }: SetupDialogProps) {
 	async function saveKey() {
 		if (!keyProvider || keySaving) return;
 		const isCustom = keyProvider.id === CUSTOM_PROVIDER.id;
-		if (!isCustom && !keyValue.trim()) return;
+		if (!keyValue.trim()) return;
 		setKeySaving(true);
 		setKeyError(null);
 		// The custom endpoint connects through its own route (base URL + key +
@@ -580,6 +580,7 @@ function OpenSetupDialog({ onClose, onDone }: SetupDialogProps) {
 														models={slotCatalog}
 														effectiveId={entry?.id}
 														effectiveProvider={entry?.provider}
+														prioritizeImage={slot === "vision"}
 														onPick={(m) => {
 															editedSlots.current.add(slot);
 															setPicked((prev) => ({ ...prev, [slot]: m }));

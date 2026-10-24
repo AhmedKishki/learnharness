@@ -172,10 +172,13 @@ describe("setup polish interactions", () => {
 		assert.equal(closed, 0);
 	});
 
-	it("the empty vision list gives the approved next action without an em dash", async () => {
+	it("the vision slot lists unknown-capability models (image-capable first, nothing hidden)", async () => {
 		await mount({ keyed: true });
 		await click(element('[data-testid="setup-trigger-vision"]'));
-		assert.ok(element('[data-testid="setup-menu-vision"]').textContent?.includes("No image-capable models. Add a provider key with access to a vision model."));
+		// The text-only fixture stays selectable in the vision slot: the slot
+		// orders image-capable first but no longer filters, so a custom endpoint
+		// that reports no modality can still be picked for Vision.
+		assert.ok(element('[data-testid="setup-menu-vision"]').textContent?.includes("fixture-text"));
 	});
 
 	it("catalog failure uses the approved two-sentence error", async () => {

@@ -39,6 +39,7 @@ export function ModelMenuList({
 	effectiveProvider,
 	onPick,
 	footer,
+	prioritizeImage,
 }: {
 	/** The full catalog — undefined while it loads. */
 	models: ModelCatalogEntry[] | undefined;
@@ -53,6 +54,10 @@ export function ModelMenuList({
 	onPick: (entry: ModelCatalogEntry) => void;
 	/** Quiet footer note under the list (context-specific). */
 	footer?: string;
+	/** Vision slot: image-capable models float to the top (still all
+	 *  selectable — a custom endpoint that doesn't report modality must
+	 *  stay pickable, so this orders rather than filters). */
+	prioritizeImage?: boolean;
 }) {
 	return (
 		<>
@@ -61,6 +66,7 @@ export function ModelMenuList({
 				itemKey={(m) => `${m.provider}/${m.id}`}
 				searchTerms={(m) => [m.provider, m.id, m.name]}
 				compare={(a, b) => a.id.localeCompare(b.id)}
+				prioritize={prioritizeImage ? (m) => m.input.includes("image") : undefined}
 				isSelected={(m) => m.id === effectiveId && m.provider === (effectiveProvider ?? m.provider)}
 				onPick={onPick}
 				searchTestid="model-search"

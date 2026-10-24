@@ -600,9 +600,10 @@ export function AgentSection({
 					const chosen = coord ? catalog?.find((m) => m.id === coord.id && m.provider === coord.provider) : undefined;
 					const levels = chosen ? chosen.supportedLevels : THINKING_LEVELS;
 					const thisMenuOpen = openMenu?.target === slot ? openMenu.kind : null;
-					// Vision slots pick from image-capable models only.
-					const slotCatalog =
-						slot === "vision" ? catalog?.filter((m) => m.input.includes("image")) : catalog;
+					// Vision slot: image-capable models float first, but all stay
+					// selectable (a custom endpoint that doesn't report modality must
+					// remain pickable) — so this orders, never filters.
+					const slotCatalog = catalog;
 					return (
 						<SettingsRow
 							key={slot}
@@ -650,6 +651,7 @@ export function AgentSection({
 											models={slotCatalog ?? undefined}
 											effectiveId={modelId}
 											effectiveProvider={provider}
+											prioritizeImage={slot === "vision"}
 											onPick={(entry) => {
 												// Auto-populate (chunk 2, owner: "populate everywhere"): the
 												// fresh pick writes a level — the stored one rides as-is

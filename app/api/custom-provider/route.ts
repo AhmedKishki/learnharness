@@ -39,24 +39,9 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-	const body = (await request.json().catch(() => null)) as {
-		baseUrl?: unknown;
-		key?: unknown;
-		models?: unknown;
-	} | null;
+	const body = (await request.json().catch(() => null)) as { baseUrl?: unknown; key?: unknown } | null;
 	const base = normalizeBaseUrl(typeof body?.baseUrl === "string" ? body.baseUrl : "");
 	if (!base) return Response.json({ error: "Base URL must be a valid http(s) URL" }, { status: 400 });
-
-	// Two intents on one endpoint, told apart by the presence of `models`:
-	//   • `models` present → CAPABILITY UPDATE: persist the user's per-model
-	//     image toggles (no re-discovery, no key change) and re-register.
-	//   • `models` absent  → CONNECT: probe /models, store the discovered set.
-	if (Array.isArray(body?.models)) {
-		const record = readSettingsRecord() ?? { version: 1 };
-		const next = writeSettingsRecord({ ...record, customProvider: { baseUrl: base, models: body!.models } });
-		syncCustomProvider(next.customProvider);
-		return Response.json({ ok: true, models: next.customProvider?.models ?? [] });
-	}
 
 	// A provided key is trimmed; an empty string means "clear it", an absent
 	// field means "leave whatever is stored". Only a real key rides the probe.
