@@ -37,6 +37,7 @@ import {
 	type GeneralSettings,
 	type DictationSettings,
 	type CompactionSettings,
+	type CustomModel,
 	type GraphSettings,
 	type ModelSlot,
 	type ModelSlotName,
@@ -95,6 +96,11 @@ export interface EffectiveSettings {
 	/** Compaction (owner round 14): resolved concrete — absent record
 	 *  section resolves to the factory 150k. */
 	compaction: Required<CompactionSettings>;
+	/** The single custom OpenAI-compatible endpoint (custom-endpoint wave):
+	 *  resolved concrete — baseUrl defaults "", models default []. Per-model
+	 *  defaults (context window, cost) apply at provider-build time in the
+	 *  server (custom-provider.ts), not here. */
+	customProvider: { baseUrl: string; models: CustomModel[] };
 }
 
 /** The conversation pair's chain (BYOK, owner 2026-09-22): the chat's own
@@ -220,6 +226,10 @@ export function resolveSettings(record: UserSettings | null): EffectiveSettings 
 		},
 		compaction: {
 			thresholdTokens: record?.compaction?.thresholdTokens ?? FACTORY_SETTINGS.compaction.thresholdTokens,
+		},
+		customProvider: {
+			baseUrl: record?.customProvider?.baseUrl ?? "",
+			models: record?.customProvider?.models ?? [],
 		},
 	};
 }

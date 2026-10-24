@@ -122,6 +122,24 @@ export const AUTH_PROVIDER_KEYS: readonly AuthProviderInfo[] = [
 	{ id: "zai-coding-cn", envVar: "ZAI_CODING_CN_API_KEY", label: "Z.AI Coding CN" },
 ] as const;
 
+/**
+ * THE SINGLE CUSTOM ENDPOINT's identity (custom-endpoint wave): a
+ * user-configured OpenAI-compatible server registered into pi-ai at runtime
+ * (server/custom-provider.ts). Deliberately NOT part of AUTH_PROVIDER_KEYS —
+ * that table is test-pinned to pi-ai's BUILT-IN providers
+ * (tests/auth-provider-keys.test.ts) and every row is env-var-keyed; the
+ * custom endpoint is keyed by a user-supplied BASE URL instead, and its API
+ * key rides this one reserved env var (OPTIONAL — keyless local servers such
+ * as Ollama / LM Studio are allowed). The Custom endpoint Settings section is
+ * its one home; the key is stored in auth.json under `envVar` like any other
+ * provider key (masked, env-reflected, no restart).
+ */
+export const CUSTOM_PROVIDER = {
+	id: "custom",
+	envVar: "CUSTOM_OPENAI_API_KEY",
+	label: "Custom endpoint",
+} as const;
+
 /** Every distinct env var a model-provider key rides in (the write side's
  *  writability check — see isProviderEnvVar below; also drives which
  *  PRESENT provider vars surface as status rows). */

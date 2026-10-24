@@ -24,7 +24,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { AUTH_KEYS, type AuthKeyStatus } from "@/src/core";
+import { AUTH_KEYS, CUSTOM_PROVIDER, type AuthKeyStatus, type CustomModel } from "@/src/core";
 import { SettingsGroup } from "./controls.tsx";
 import { SubscriptionConnections } from "./subscription-connections.tsx";
 import { ProviderMenuList } from "./model-menu.tsx";
@@ -83,6 +83,10 @@ export function classifyKeys(
 	const unknownRows: AuthKeyStatus[] = [];
 	for (const s of statuses) {
 		if (isTool(s.id)) continue;
+		// The custom endpoint's key has its OWN home (the Custom endpoint
+		// section), so it never shows here — not as a provider row, not as an
+		// "other stored variable".
+		if (s.id === CUSTOM_PROVIDER.envVar) continue;
 		if (providerEnv.has(s.id) || (!s.info && providers === undefined)) providerRows.push(s);
 		else if (!s.info) unknownRows.push(s);
 		// (pre-interlude catalogs: a curated-but-unclassified status still
@@ -453,6 +457,7 @@ export function KeysSection({
 						}}
 					/>
 				)}
+				<CustomProviderRow />
 				{adding && (
 					<div className="flex items-center gap-2 rounded-sm px-1 py-1.5" data-testid={`key-${adding.id}-editor`}>
 						<span className="shrink-0 font-ui text-xs text-foreground">{adding.label}</span>
@@ -559,5 +564,182 @@ function AddProviderEditor({
 				</p>
 			)}
 		</>
+	);
+}
+
+/** The custom OpenAI-compatible endpoint's row in the provider list — one more
+ *  provider, connected by a base URL + (optional) key exactly like the built-ins
+ *  are connected by a key (the URL is the one extra field). Its status reads
+ *  GET /api/custom-provider; Connect POSTs the connect (validate + discover
+ *  models + register) and dispatches the keys signal so the catalog widens with
+ *  no restart. Keyless local servers (Ollama / LM Studio) connect with no key. */
+function CustomProviderRow() {
+	const [status, setStatus] = useState<{ baseUrl: string; models: CustomModel[]; keyPresent: boolean } | null>(null);
+	const [expanded, setExpanded] = useState(false);
+	const [baseUrl, setBaseUrl] = useState("");
+	const [key, setKey] = useState("");
+	const [keyTouched, setKeyTouched] = useState(false);
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+
+	const reload = () =>
+		fetch("/api/custom-provider")
+			.then((r) => r.json())
+			.then((b: { baseUrl?: string; models?: CustomModel[]; keyPresent?: boolean }) =>
+				setStatus({ baseUrl: b.baseUrl ?? "", models: b.models ?? [], keyPresent: Boolean(b.keyPresent) }),
+			)
+			.catch(() => setStatus({ baseUrl: "", models: [], keyPresent: false }));
+	useEffect(() => {
+		void reload();
+	}, []);
+
+	async function save() {
+		if (busy || !baseUrl.trim()) return;
+		setBusy(true);
+		setError(null);
+		const res = await fetch("/api/custom-provider", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ baseUrl, ...(keyTouched ? { key } : {}) }),
+		}).catch(() => null);
+		setBusy(false);
+		if (!res || !res.ok) {
+			const b = (await res?.json().catch(() => ({}))) as { error?: string } | undefined;
+			setError(res ? (b?.error ?? `Connect failed (${res.status})`) : "Connect failed. Check your connection.");
+			return;
+		}
+		setExpanded(false);
+		setKey("");
+		setKeyTouched(false);
+		await reload();
+		notifySettingsSaved("keys");
+	}
+
+	// Flip one model's image capability and persist it (capability update — no
+	// re-discovery, no key change). Uses the CONNECTED base URL (status.baseUrl),
+	// not the editor's possibly-edited field, so toggles always apply to the
+	// endpoint whose models are listed.
+	async function toggleImage(id: string) {
+		if (!status?.baseUrl || busy) return;
+		const models = status.models.map((m) => (m.id === id ? { ...m, image: !m.image } : m));
+		setBusy(true);
+		setError(null);
+		const res = await fetch("/api/custom-provider", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ baseUrl: status.baseUrl, models }),
+		}).catch(() => null);
+		setBusy(false);
+		if (!res || !res.ok) {
+			const b = (await res?.json().catch(() => ({}))) as { error?: string } | undefined;
+			setError(res ? (b?.error ?? `Save failed (${res.status})`) : "Save failed. Check your connection.");
+			return;
+		}
+		await reload();
+		notifySettingsSaved("keys");
+	}
+
+	if (expanded) {
+		return (
+			<div data-testid="custom-endpoint-editor" className="flex flex-col gap-2 rounded-sm px-1 py-1.5">
+				<div className="flex items-center gap-2">
+					<span className="shrink-0 font-ui text-xs text-foreground">Custom endpoint</span>
+					<input
+						type="text"
+						value={baseUrl}
+						onChange={(e) => setBaseUrl(e.target.value)}
+						placeholder="Base URL, e.g. http://localhost:11434/v1"
+						aria-label="Custom endpoint base URL"
+						data-testid="custom-baseurl-input"
+						disabled={busy}
+						autoFocus
+						className="h-7 min-w-0 flex-1 rounded-sm border border-border bg-background px-1.5 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground/60 focus:border-muted-foreground/50"
+					/>
+				</div>
+				<div className="flex items-center gap-2">
+					<input
+						type="text"
+						value={key}
+						onChange={(e) => {
+							setKey(e.target.value);
+							setKeyTouched(true);
+						}}
+						placeholder={status?.keyPresent ? "Key set — paste to replace, empty to clear" : "API key (optional for local servers)"}
+						aria-label="Custom endpoint API key"
+						data-testid="custom-key-input"
+						disabled={busy}
+						className="h-7 min-w-0 flex-1 rounded-sm border border-border bg-background px-1.5 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground/60 focus:border-muted-foreground/50"
+					/>
+					<button
+						type="button"
+						onClick={() => void save()}
+						disabled={busy || !baseUrl.trim()}
+						data-testid="custom-save"
+						className="shrink-0 text-xs text-foreground underline-offset-2 hover:underline disabled:text-muted-foreground/40 disabled:no-underline"
+					>
+						{busy ? "Connecting…" : "Connect"}
+					</button>
+					<button
+						type="button"
+						onClick={() => setExpanded(false)}
+						disabled={busy}
+						data-testid="custom-cancel"
+						className="shrink-0 text-xs text-muted-foreground/70 underline-offset-2 hover:text-foreground hover:underline"
+					>
+						Cancel
+					</button>
+				</div>
+				{status && status.models.length > 0 && (
+					<div className="flex flex-col gap-1 border-t border-border/40 pt-2">
+						<span className="text-[11px] text-muted-foreground">
+							Models — check the ones that accept images (needed for the Vision slot)
+						</span>
+						{status.models.map((m) => (
+							<label key={m.id} className="flex items-center gap-2 text-xs">
+								<input
+									type="checkbox"
+									checked={Boolean(m.image)}
+									disabled={busy}
+									onChange={() => void toggleImage(m.id)}
+									data-testid={`custom-image-${m.id.replace(/[^a-z0-9-]/gi, "_")}`}
+								/>
+								<span className="font-mono text-foreground">{m.id}</span>
+								<span className="text-muted-foreground">images</span>
+							</label>
+						))}
+					</div>
+				)}
+				{error && (
+					<p role="alert" data-testid="custom-error" className="text-xs text-red-500">
+						{error}
+					</p>
+				)}
+			</div>
+		);
+	}
+
+	const count = status?.models.length ?? 0;
+	const imgCount = status?.models.filter((m) => m.image).length ?? 0;
+	const line = status?.baseUrl
+		? `${status.baseUrl} · ${count} model${count === 1 ? "" : "s"}${imgCount ? ` · ${imgCount} image` : ""}${status.keyPresent ? "" : " · keyless"}`
+		: "not set";
+
+	return (
+		<div data-testid="custom-endpoint-row">
+			<button
+				type="button"
+				data-testid="custom-endpoint-row-btn"
+				onClick={() => {
+					setBaseUrl(status?.baseUrl ?? "");
+					setExpanded(true);
+				}}
+				className="flex w-full items-center justify-between gap-3 rounded-sm px-1 py-1.5 text-left cursor-pointer transition-colors hover:bg-accent/50"
+			>
+				<span className="font-ui text-xs text-foreground">Custom endpoint</span>
+				<span data-testid="custom-endpoint-status" className="max-w-[60%] truncate font-mono text-[11px] text-muted-foreground">
+					{line}
+				</span>
+			</button>
+		</div>
 	);
 }

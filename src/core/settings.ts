@@ -206,6 +206,83 @@ export interface ModelsSettings {
 	vision?: ModelSlot;
 }
 
+// ─── Custom OpenAI-compatible endpoint (custom-endpoint wave) ────────────────
+// ONE user-configured endpoint speaking the OpenAI /chat/completions API
+// (self-hosted vLLM / Ollama / llama.cpp, a corporate proxy). It is NOT a
+// special concept: it is one more provider in the Keys list, connected by a
+// base URL + (optional) key exactly as the built-ins are connected by a key.
+// NON-SECRET config only — base URL + the model ids discovered from it. The
+// API key is a SECRET and lives in the auth store under CUSTOM_PROVIDER.envVar
+// (core/auth-keys.ts), never in this record, exactly like every other key. The
+// endpoint is registered into pi-ai as a normal provider
+// (server/custom-provider.ts) so its models fill the same slots/roles.
+
+/** Default facts for a custom model. The endpoint's /models reports ids (and
+ *  sometimes modality); these fill the rest: self-hosted endpoints are free. */
+export const CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW = 8192;
+export const CUSTOM_MODEL_DEFAULT_MAX_TOKENS = 4096;
+
+/** One discovered custom model. `image` marks it as accepting image input so
+ *  it is selectable for the Vision slot (PDFs, image tasks). Discovery sets it
+ *  from the endpoint's /models metadata when reported; the Keys row exposes a
+ *  checkbox for endpoints that don't report it. `context` / `maxTokens` carry
+ *  the endpoint's reported token limits (max_input_tokens / max_output_tokens).
+ *  Anything the endpoint omits (cost, and any unreported window) lands on the
+ *  CUSTOM_MODEL_DEFAULT_* values at provider-build time. */
+export interface CustomModel {
+	id: string;
+	/** Accepts image input (Vision-capable). Default false (text-only). */
+	image?: boolean;
+	/** Context window in tokens, from the endpoint. Absent → the default. */
+	context?: number;
+	/** Max output tokens, from the endpoint. Absent → the default. */
+	maxTokens?: number;
+}
+
+/** The single custom endpoint's stored config (delta section). `models` are
+ *  discovered from the endpoint's /models on connect; the only user-editable
+ *  fact per model is the `image` capability toggle. */
+export interface CustomProviderSettings {
+	/** Base URL of the OpenAI-compatible server, NORMALIZED (see
+	 *  normalizeBaseUrl): no trailing slash, absolute http(s). Empty/absent =
+	 *  not configured. */
+	baseUrl?: string;
+	/** Models discovered from the endpoint (refreshed on connect), each with
+	 *  its image-capability flag. */
+	models?: CustomModel[];
+}
+
+/** THE one place the base-URL canonical form is defined (single source — the
+ *  sanitizer stores the normalized value, so no consumer re-derives it and
+ *  the trailing-slash edge case is defined out of existence). Trims; parses
+ *  as an absolute URL (scheme + host lowercased by the parser); drops any
+ *  trailing slashes (the OpenAI SDK appends /chat/completions itself).
+ *  Returns "" for anything that is not a valid absolute http(s) URL — callers
+ *  treat "" as "not configured". */
+export function normalizeBaseUrl(raw: string): string {
+	const value = raw.trim();
+	if (!value) return "";
+	let url: URL;
+	try {
+		url = new URL(value);
+	} catch {
+		return "";
+	}
+	if (url.protocol !== "http:" && url.protocol !== "https:") return "";
+	return url.toString().replace(/\/+$/, "");
+}
+
+/** THE single source of "is the custom endpoint usable?" (custom-endpoint
+ *  wave): a non-empty base URL. The API key is OPTIONAL (keyless local
+ *  servers), so key presence is deliberately NOT part of this — the picker
+ *  federation, the sync, and the roster all consult this one predicate so the
+ *  rule can never drift between them. */
+export function customProviderUsable(
+	cp: CustomProviderSettings | undefined,
+): cp is CustomProviderSettings & { baseUrl: string } {
+	return Boolean(cp?.baseUrl);
+}
+
 /** First-run gate (model-slots wave, owner 2026-09-20): the app refuses
  *  to start chats until the user has actively picked all three slots —
  *  there ARE no defaults for 33 providers; a configured app is one whose
@@ -371,6 +448,9 @@ export interface UserSettings {
 	agent?: AgentSettings;
 	/** The strong/cheap/vision model slots (model slots wave, 2026-09-20). */
 	models?: ModelsSettings;
+	/** The single custom OpenAI-compatible endpoint (custom-endpoint wave).
+	 *  Non-secret config only; the API key lives in the auth store. */
+	customProvider?: CustomProviderSettings;
 	appearance?: AppearanceSettings;
 	graph?: GraphSettings;
 	compaction?: CompactionSettings;
@@ -493,6 +573,43 @@ function sanitizeModels(raw: Record<string, unknown>): ModelsSettings {
 	for (const slot of MODEL_SLOTS) {
 		const cleaned = sanitizeRoleOverride(raw[slot]);
 		if (cleaned) out[slot] = cleaned;
+	}
+	return out;
+}
+
+/** The customProvider section: a normalized base URL (invalid → dropped, i.e.
+ *  treated as unset) and the discovered models (each `{ id, image? }`; ids
+ *  trimmed, empties and duplicate ids dropped, `image` kept only when true;
+ *  a non-array drops the whole list). Clamp-never-reject, like every
+ *  sanitizer here. */
+/** A positive integer, or undefined — keeps only meaningful token counts. */
+function positiveInt(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+function sanitizeCustomProvider(raw: Record<string, unknown>): CustomProviderSettings {
+	const out: CustomProviderSettings = {};
+	if (typeof raw.baseUrl === "string") {
+		const base = normalizeBaseUrl(raw.baseUrl);
+		if (base) out.baseUrl = base;
+	}
+	if (Array.isArray(raw.models)) {
+		const byId = new Map<string, CustomModel>();
+		for (const m of raw.models) {
+			if (typeof m !== "object" || m === null) continue;
+			const rec = m as Record<string, unknown>;
+			if (typeof rec.id !== "string") continue;
+			const id = rec.id.trim();
+			if (!id) continue;
+			const model: CustomModel = { id };
+			if (rec.image === true) model.image = true;
+			const context = positiveInt(rec.context);
+			if (context) model.context = context;
+			const maxTokens = positiveInt(rec.maxTokens);
+			if (maxTokens) model.maxTokens = maxTokens;
+			byId.set(id, model);
+		}
+		out.models = [...byId.values()];
 	}
 	return out;
 }
@@ -640,6 +757,9 @@ export function sanitizeUserSettings(raw: unknown): UserSettings | null {
 	if (r.models !== null && typeof r.models === "object" && !Array.isArray(r.models)) {
 		const models = sanitizeModels(r.models as Record<string, unknown>);
 		if (Object.keys(models).length) out.models = models;
+	}
+	if (r.customProvider !== null && typeof r.customProvider === "object" && !Array.isArray(r.customProvider)) {
+		out.customProvider = sanitizeCustomProvider(r.customProvider as Record<string, unknown>);
 	}
 	if (r.graph !== null && typeof r.graph === "object" && !Array.isArray(r.graph)) {
 		out.graph = sanitizeGraph(r.graph as Record<string, unknown>);
