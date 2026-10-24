@@ -34,6 +34,7 @@ import type {
 } from "../core/contracts/models.ts";
 import type { EffectiveModelSpec, EffectiveSlot } from "../core/settings-resolution.ts";
 import { AUTH_PROVIDER_KEYS } from "../core/auth-keys.ts";
+import { CLAUDE_CODE_PROVIDER } from "../agent/claude-code/constants.ts";
 import { BACKGROUND_MODEL_ROLES, MODEL_SLOTS, type BackgroundModelRole, type ModelSlotName, type ModelsSettings } from "../core/settings.ts";
 
 /** The picker's client-safe model entry (contract: core/contracts/models.ts). */
@@ -130,9 +131,10 @@ export function catalogProviders(): CatalogProvider[] {
 
 /** The providers whose key is present — the picker federates exactly
  *  these (a keyless provider's models are unreachable by design; the
- *  Keys page is the discovery surface, same discipline as search). */
+ *  Keys page is the discovery surface, same discipline as search), plus
+ *  claude-code, which runs on the local CLI's subscription and takes no key. */
 function keyedProviderIds(): Set<string> {
-	return new Set(catalogProviders().filter((p) => p.keyPresent).map((p) => p.id));
+	return new Set([...catalogProviders().filter((p) => p.keyPresent).map((p) => p.id), CLAUDE_CODE_PROVIDER]);
 }
 
 /** Project one catalog model to the client DTO. */

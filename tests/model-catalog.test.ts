@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+	catalogContextLimits,
 	catalogDefaultsFor,
 	catalogProviders,
 	catalogRolePins,
@@ -22,6 +23,7 @@ import { BACKGROUND_MODEL_ROLES } from "../src/core/settings.ts";
 import { resolveSettings } from "../src/core/settings-resolution.ts";
 import { readSettings } from "../src/store/settings.ts";
 import { effectiveSettings } from "../src/server/stores.ts";
+import { providerKeyPresent } from "../src/server/keys.ts";
 
 // The model-control wave (2026-09-12): pi-ai owns the registry — these pins
 // hold our projection + validation honest against the shipped catalog, and
@@ -325,5 +327,27 @@ describe("pi thinking truth (pinned against pi-ai upgrades)", () => {
 	it("the legacy piEngineFor role entry point throws honestly (BYOK: no pins)", async () => {
 		const { piEngineFor } = await import("../src/agent/models.ts");
 		assert.throws(() => piEngineFor("prober"), /no configured model for role "prober"/);
+	});
+});
+describe("the claude-code provider (subscription CLI, no key)", () => {
+	it("modelCatalog() lists claude-code opus/sonnet/haiku with no keys saved", () => {
+		const ids = modelCatalog()
+			.models.filter((m) => m.provider === "claude-code")
+			.map((m) => m.id);
+		assert.deepEqual(ids, ["haiku", "opus", "sonnet"]);
+	});
+
+	it("catalogContextLimits() has claude-code:opus", () => {
+		assert.ok((catalogContextLimits().get("claude-code:opus") ?? 0) > 0);
+	});
+
+	it('piEngineForSpec({ provider: "claude-code", id: "sonnet" }) resolves', () => {
+		const engine = piEngineForSpec({ provider: "claude-code", id: "sonnet" });
+		assert.equal(engine.model.provider, "claude-code");
+		assert.equal(engine.model.id, "sonnet");
+	});
+
+	it('providerKeyPresent("claude-code") is true', () => {
+		assert.equal(providerKeyPresent("claude-code"), true);
 	});
 });
