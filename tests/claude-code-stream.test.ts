@@ -759,6 +759,52 @@ test("idle timeout kills an orphaned waiting process", async (t) => {
 	await assertCleanedUp(getOnlyCall(calls));
 });
 
+test("a tool result arriving after the idle timeout starts fresh with the call and its result in the replay", async (t) => {
+	liveProcessIdleTimeoutMs.current = 300;
+	t.after(() => (liveProcessIdleTimeoutMs.current = LIVE_PROCESS_IDLE_TIMEOUT_MS));
+
+	const stdinFile = join(mkdtempSync(join(tmpdir(), "claude-code-stdin-")), "stdin.jsonl");
+	t.after(() => rmSync(dirname(stdinFile), { recursive: true, force: true }));
+
+	const readA: ToolUse = { id: "toolu_late_a", name: "read", arguments: { path: "a" } };
+	const waiting = createFakeRun(t, [...toToolUseMessage([readA]), callTool(readA), REPLY]);
+	const fresh = createFakeRun(t, readFixtureLines("text.jsonl"), { FAKE_CLAUDE_STDIN: stdinFile });
+	const runClaude: RunClaude = (args, options) => (waiting.calls.length === 0 ? waiting : fresh).runClaude(args, options);
+	const streamFunction = createClaudeCodeStreamFunction(runClaude);
+	const toolMessage = await runTurn(streamFunction, [HI]);
+
+	const waitingCall = getOnlyCall(waiting.calls);
+	assert.equal(waitingCall.child.exitCode, null, "the process should wait for the tool result until the idle timeout");
+	await assertCleanedUp(waitingCall);
+
+	const reply = await runTurn(streamFunction, [HI, toolMessage, toToolResult(readA, "contents of a")]);
+
+	assert.equal(getText(reply), "hello there");
+	await assertCleanedUp(getOnlyCall(fresh.calls));
+
+	const stdin = readFileSync(stdinFile, "utf8");
+	assert.ok(stdin.includes('[tool call read] {\\"path\\":\\"a\\"}'), stdin);
+	assert.ok(stdin.includes("[tool result read]"), stdin);
+	assert.ok(stdin.includes("contents of a"), stdin);
+});
+
+test("a tool result arriving late but before the idle timeout still continues the waiting process", async (t) => {
+	liveProcessIdleTimeoutMs.current = 1000;
+	t.after(() => (liveProcessIdleTimeoutMs.current = LIVE_PROCESS_IDLE_TIMEOUT_MS));
+
+	const readA: ToolUse = { id: "toolu_slow_a", name: "read", arguments: { path: "a" } };
+	const { runClaude, calls } = createFakeRun(t, [...toToolUseMessage([readA]), callTool(readA), REPLY]);
+	const streamFunction = createClaudeCodeStreamFunction(runClaude);
+	const toolMessage = await runTurn(streamFunction, [HI]);
+
+	await sleep(500);
+
+	const reply = await runTurn(streamFunction, [HI, toolMessage, toToolResult(readA, "contents of a")]);
+
+	assert.equal(getText(reply), "contents of a");
+	await assertCleanedUp(getOnlyCall(calls));
+});
+
 test("two concurrent streams keep separate processes and results never cross", async (t) => {
 	const readOne: ToolUse = { id: "toolu_concurrent_one", name: "read", arguments: { path: "one" } };
 	const readTwo: ToolUse = { id: "toolu_concurrent_two", name: "read", arguments: { path: "two" } };
