@@ -519,7 +519,9 @@ function OpenSetupDialog({ onClose, onDone }: SetupDialogProps) {
 							// Unavailable metadata cannot erase or clamp a saved preference.
 							const levelsForEntry = metadata?.supportedLevels ?? (entry ? Object.keys(THINKING_LABEL) : []);
 							const available = catalog?.models ?? (failed ? [] : undefined);
-							const slotCatalog = slot === "vision" ? available?.filter((m) => m.input.includes("image")) : available;
+							const slotCatalog = slot === "vision"
+								? available?.filter((m) => m.input.includes("image") || m.provider === CUSTOM_PROVIDER.id)
+								: available;
 							return (
 								<div key={slot} data-testid={`setup-slot-${slot}`} className="flex flex-col gap-1.5">
 									<span className="flex items-center gap-1.5">
@@ -573,7 +575,7 @@ function OpenSetupDialog({ onClose, onDone }: SetupDialogProps) {
 														models={slotCatalog}
 														effectiveId={entry?.id}
 														effectiveProvider={entry?.provider}
-														prioritizeImage={slot === "vision"}
+														vision={slot === "vision"}
 														onPick={(m) => {
 															editedSlots.current.add(slot);
 															setPicked((prev) => ({ ...prev, [slot]: m }));
