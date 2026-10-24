@@ -20,7 +20,7 @@ function getWindowsSearchSpec(env: BinaryLookup["env"], homeDir: string): Search
 	const appData = env.APPDATA ?? paths.join(homeDir, "AppData", "Roaming");
 	return {
 		paths,
-		names: ["claude.cmd", "claude.exe"],
+		names: ["claude.exe", "claude.cmd"],
 		knownDirs: [paths.join(homeDir, ".local", "bin"), paths.join(homeDir, ".claude", "local"), env.npm_config_prefix ?? paths.join(appData, "npm")],
 	};
 }
@@ -38,8 +38,8 @@ function getPosixSearchSpec(env: BinaryLookup["env"], homeDir: string): SearchSp
 export function resolveClaudeBinary({ env, platform, homeDir, isExecutable }: BinaryLookup): string | null {
 	const { paths, names, knownDirs } = platform === "win32" ? getWindowsSearchSpec(env, homeDir) : getPosixSearchSpec(env, homeDir);
 	const pathDirs = (env.PATH ?? "").split(paths.delimiter).filter(Boolean);
-	for (const dir of [...pathDirs, ...knownDirs]) {
-		for (const name of names) {
+	for (const name of names) {
+		for (const dir of [...pathDirs, ...knownDirs]) {
 			const candidate = paths.join(dir, name);
 			if (isExecutable(candidate)) return candidate;
 		}

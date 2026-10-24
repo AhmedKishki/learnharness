@@ -49,6 +49,13 @@ test("windows looks for claude.cmd and claude.exe", () => {
 	assert.equal(resolveWith(["C:\\bin\\claude"], env, "win32", winHome), null);
 });
 
+test("windows prefers claude.exe anywhere over claude.cmd, which Node cannot spawn without a shell", () => {
+	const winHome = "C:\\Users\\u";
+	const env = { PATH: "C:\\bin", APPDATA: `${winHome}\\AppData\\Roaming` };
+	const executables = ["C:\\bin\\claude.cmd", `${winHome}\\.local\\bin\\claude.exe`];
+	assert.equal(resolveWith(executables, env, "win32", winHome), `${winHome}\\.local\\bin\\claude.exe`);
+});
+
 test("returns null when every location misses", () => {
 	assert.equal(resolveWith([], { PATH: "/usr/bin:/bin" }), null);
 });
