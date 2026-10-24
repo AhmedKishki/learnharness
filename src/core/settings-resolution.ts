@@ -96,10 +96,7 @@ export interface EffectiveSettings {
 	/** Compaction (owner round 14): resolved concrete — absent record
 	 *  section resolves to the factory 150k. */
 	compaction: Required<CompactionSettings>;
-	/** The single custom OpenAI-compatible endpoint (custom-endpoint wave):
-	 *  resolved concrete — baseUrl defaults "", models default []. Per-model
-	 *  defaults (context window, cost) apply at provider-build time in the
-	 *  server (custom-provider.ts), not here. */
+	/** Custom endpoint, resolved concrete: baseUrl defaults "", models default []. */
 	customProvider: { baseUrl: string; models: CustomModel[] };
 }
 

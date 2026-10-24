@@ -48,7 +48,7 @@ import { notifySettingsSaved, useSettingsSaved } from "@/components/settings-sig
 import { useModelCatalog } from "@/components/model-catalog";
 import { savedSlotsConfigured } from "@/components/setup-cta";
 import { Hint } from "@/components/ui/hint";
-import { type ProviderKeyInfo } from "@/components/settings/keys-section";
+import { type ProviderKeyInfo, CUSTOM_PROVIDER_INFO } from "@/components/settings/keys-section";
 import { ProviderMenuList } from "@/components/settings/model-menu";
 import { ChatGPTBackgroundAccess } from "@/components/settings/chatgpt-connection";
 import { NativeSubscriptionBackgroundAccess, SubscriptionConnections } from "@/components/settings/subscription-connections";
@@ -64,11 +64,6 @@ const SLOT_META: Record<ModelSlotName, { label: string; roster: string }> = {
 	vision: { label: "Vision", roster: "Visual maker + PDF reader" },
 };
 const SLOT_ORDER: readonly ModelSlotName[] = ["strong", "cheap", "vision"];
-
-/** The custom endpoint's synthetic picker entry — one more provider in the
- *  Stage 1 roster, connected by a base URL + key (POST
- *  /api/custom-provider). Not part of the /api/keys plain-key roster. */
-const CUSTOM_PICKER: ProviderKeyInfo = { id: CUSTOM_PROVIDER.id, envVar: CUSTOM_PROVIDER.envVar, label: CUSTOM_PROVIDER.label };
 
 /** The GET /api/models response fields the flow consumes. */
 interface ModelsBody {
@@ -159,9 +154,8 @@ export function SetupKeysBody({
 	onSave: () => void;
 	/** The MenuShell anchor — wired by the wrapper (its triggerRef). */
 	menuAnchor: React.RefObject<HTMLDivElement | null>;
-	/** The chosen provider is the custom endpoint: a base URL field joins the
-		 *  key field (a key is required — local servers accept any value). All three
-	 *  optional so the plain-key callers (and tests) stay unchanged. */
+	/** Chosen provider is the custom endpoint: a base URL field joins the key
+	 *  field. All three optional so plain-key callers (and tests) stay unchanged. */
 	isCustom?: boolean;
 	baseUrl?: string;
 	onBaseUrl?: (v: string) => void;
@@ -408,8 +402,7 @@ function OpenSetupDialog({ onClose, onDone }: SetupDialogProps) {
 		if (!keyValue.trim()) return;
 		setKeySaving(true);
 		setKeyError(null);
-		// The custom endpoint connects through its own route (base URL + key +
-		// discovery in one action); every other provider is a plain key PUT.
+		// Custom endpoint connects through its own route; every other provider is a plain key PUT.
 		const res = isCustom
 			? await fetch("/api/custom-provider", {
 					method: "POST",
@@ -460,7 +453,7 @@ function OpenSetupDialog({ onClose, onDone }: SetupDialogProps) {
 	}
 
 	const keysBody = <SetupKeysBody
-		providers={keyProviders ? [...keyProviders, CUSTOM_PICKER] : undefined}
+		providers={keyProviders ? [...keyProviders, CUSTOM_PROVIDER_INFO] : undefined}
 		provider={keyProvider}
 		value={keyValue}
 		saving={keySaving}

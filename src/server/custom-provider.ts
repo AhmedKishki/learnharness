@@ -1,30 +1,8 @@
 /**
- * THE CUSTOM OPENAI-COMPATIBLE ENDPOINT (custom-endpoint wave): the deep
- * module that turns the user's non-secret config (base URL + discovered model
- * ids, core/settings.ts `customProvider`) into a real pi-ai provider registered
- * in the process-wide `piModels()` collection — so its models fill the same
- * strong/cheap/vision slots and background roles as any built-in.
- *
- * WHY A MODULE OWNS THIS (information hiding): the fact "a custom endpoint is
- * an OpenAI-completions provider at a user URL with an optional key" would
- * otherwise leak into the catalog, the keys seam, and the settings route. It
- * lives here instead; those surfaces consult the pure `customProviderUsable`
- * predicate (core) and call `syncCustomProvider`. The single-endpoint scope is
- * special-purpose, but the builder is written general (`buildOpenAiCompatible
- * Provider`) so a future multi-endpoint wave reuses it unchanged.
- *
- * LIFECYCLE (no restart, mirroring the keys seam): `syncCustomProvider` is
- * idempotent and cheap — called at boot (stores.ts, the composition root) and
- * after every connect (POST /api/custom-provider). It replaces
- * or removes the provider in `piModels()` by id. The base URL is fixed at
- * provider construction, so a base-URL change is a rebuild — which is exactly
- * what a re-sync does.
- *
- * AUTH: pi-ai resolves a provider's key at request time. We read the reserved
- * env var through the keys seam (`keyValue` — env-wins, file fallback, honors
- * the fresh-user switch), and fall back to a placeholder when none is set so
- * KEYLESS local servers (Ollama / LM Studio / llama.cpp) work. The placeholder
- * is an internal detail of `resolve()` — no caller ever sees it.
+ * The custom OpenAI-compatible endpoint: turns the user's non-secret config
+ * (base URL + discovered models) into a pi-ai provider registered in
+ * `piModels()`, so its models fill the same slots as any built-in. Keyless
+ * local servers work via a placeholder key resolved at request time.
  */
 
 import { createProvider, type ApiKeyAuth, type Api, type Model, type Provider } from "@earendil-works/pi-ai";
@@ -41,35 +19,24 @@ import {
 } from "../core/settings.ts";
 import { keyValue } from "./keys.ts";
 
-/** Placeholder bearer sent to keyless endpoints. Many local OpenAI-compatible
- *  servers ignore the Authorization header entirely; the OpenAI client still
- *  requires *a* key, so we hand it this. Never shown to the user. */
+/** Placeholder bearer for keyless endpoints (the OpenAI client needs *a* key). */
 const KEYLESS_PLACEHOLDER = "not-needed";
 
 /** Narrow an unknown to a plain object (not null, not an array). */
 const isRecord = (value: unknown): value is Record<string, unknown> =>
 	typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** The custom endpoint's auth: resolve the reserved key through the keys
- *  seam, else the keyless placeholder. `resolve` is the only method pi-ai
- *  needs to treat the provider as configured. */
+/** Auth: the reserved key via the keys seam, else the keyless placeholder. */
 const customEndpointAuth: ApiKeyAuth = {
 	name: `${CUSTOM_PROVIDER.label} API key`,
 	resolve: async () => {
 		const key = keyValue(CUSTOM_PROVIDER.envVar)?.trim();
-		// Keyless local servers ignore the header; the OpenAI client still
-		// needs *a* key, so hand it the placeholder.
 		return { auth: { apiKey: key || KEYLESS_PLACEHOLDER }, source: key ? CUSTOM_PROVIDER.envVar : "keyless" };
 	},
 };
 
-/** Map one discovered custom model to a pi-ai chat model entry. The endpoint's
- *  /models reports ids plus whatever metadata it exposes; `image` sets `input`
- *  so a Vision-capable model is selectable for the Vision slot (PDFs, images),
- *  and `context` / `maxTokens` carry the endpoint's reported token limits.
- *  Anything the endpoint omits falls back to the CUSTOM_MODEL_DEFAULT_* values
- *  (self-hosted = free, modest window). `baseUrl` is stamped per-model (pi reads
- *  it from the model, not the provider). */
+/** Map a discovered model to a pi-ai entry: image→input, context/maxTokens→
+ *  limits (else CUSTOM_MODEL_DEFAULT_*). baseUrl is stamped per-model. */
 function toPiModel(model: CustomModel, baseUrl: string): Model<Api> {
 	return {
 		id: model.id,
@@ -86,8 +53,7 @@ function toPiModel(model: CustomModel, baseUrl: string): Model<Api> {
 	};
 }
 
-/** Build a general OpenAI-compatible provider from parts (single-use today,
- *  general by design). `baseUrl` must already be normalized. */
+/** Build an OpenAI-compatible provider from parts. baseUrl must be normalized. */
 export function buildOpenAiCompatibleProvider(input: {
 	baseUrl: string;
 	models: readonly CustomModel[];
@@ -102,21 +68,14 @@ export function buildOpenAiCompatibleProvider(input: {
 	});
 }
 
-/**
- * Re-sync the custom provider into `piModels()` from the resolved section
- * (idempotent). Usable → (re)build and `setProvider` (replaces by id, so a
- * base-URL/model change lands with no restart). Not usable → `deleteProvider`
- * so it stops federating and any slot pinning one of its models falls back to
- * the honest models_not_configured refusal. Never throws: a bad config simply
- * leaves the provider absent.
- */
+/** Re-sync the provider into piModels() (idempotent): usable → rebuild;
+ *  not usable → remove. Never throws. */
 export function syncCustomProvider(cp: CustomProviderSettings | undefined): void {
 	const models = piModels();
 	if (!customProviderUsable(cp)) {
 		models.deleteProvider(CUSTOM_PROVIDER.id);
 		return;
 	}
-	// `customProviderUsable` narrowed cp to a defined section with a baseUrl.
 	models.setProvider(
 		buildOpenAiCompatibleProvider({ baseUrl: normalizeBaseUrl(cp.baseUrl), models: cp.models ?? [] }),
 	);
@@ -125,14 +84,9 @@ export function syncCustomProvider(cp: CustomProviderSettings | undefined): void
 /** Outcome of a model-discovery probe. */
 export type DiscoverResult = { ok: true; models: CustomModel[] } | { ok: false; error: string };
 
-/**
- * Probe an endpoint's `GET {baseUrl}/models` (the OpenAI list-models route)
- * and return the model ids. The scheme is validated via normalizeBaseUrl
- * (http/https only — the SSRF guard: this is a local app, but a user paste of
- * `file://` or a stray string must never reach fetch). The key rides as a
- * bearer when one is configured; keyless endpoints answer without it. A
- * non-2xx or unparseable body is an honest error, never a silent empty list.
- */
+/** Probe GET {baseUrl}/models for model ids. Scheme validated (http/https
+ *  only); keyless endpoints answer without a bearer. Non-2xx or unparseable
+ *  body → honest error, never a silent empty list. */
 export async function discoverModels(baseUrl: string, apiKey?: string): Promise<DiscoverResult> {
 	const base = normalizeBaseUrl(baseUrl);
 	if (!base) return { ok: false, error: "Base URL must be a valid http(s) URL" };
@@ -157,9 +111,8 @@ export async function discoverModels(baseUrl: string, apiKey?: string): Promise<
 	}
 }
 
-/** The model rows in a list response, or null when the shape is unrecognized.
- *  Accepts the OpenAI `{data:[…]}`, the Ollama-style `{models:[…]}`, or a
- *  bare array. */
+/** Model rows from a list response ({data:[…]} | {models:[…]} | bare array),
+ *  or null if unrecognized. */
 function modelRows(body: unknown): unknown[] | null {
 	if (Array.isArray(body)) return body;
 	if (isRecord(body)) {
@@ -169,12 +122,8 @@ function modelRows(body: unknown): unknown[] | null {
 	return null;
 }
 
-/** Does a /models row advertise image input? Endpoints are inconsistent, so
- *  scan the common modality/capability fields (OpenRouter's
- *  `architecture.input_modalities`, plus `input_modalities` / `modalities` /
- *  `supported_modalities` / `capabilities`) for a value mentioning image or
- *  vision. Absent/unrecognized -> false (text-only); the Keys row exposes a
- *  manual toggle for endpoints that report nothing. */
+/** Does a /models row advertise image input? Scans the common modality/
+ *  capability fields; absent or unrecognized → false (text-only). */
 function detectImage(row: Record<string, unknown>): boolean {
 	const architecture = isRecord(row.architecture) ? row.architecture : undefined;
 	const candidates = [
@@ -190,9 +139,8 @@ function detectImage(row: Record<string, unknown>): boolean {
 	return false;
 }
 
-/** First positive integer among `keys` on a /models row, else undefined.
- *  Endpoints name the token limits inconsistently, so the caller passes an
- *  ordered list of candidate field names. */
+/** First positive integer among `keys` on a row (endpoints name limits
+ *  inconsistently). */
 function firstPositive(row: Record<string, unknown>, keys: readonly string[]): number | undefined {
 	for (const key of keys) {
 		const value = row[key];
@@ -205,10 +153,8 @@ function firstPositive(row: Record<string, unknown>, keys: readonly string[]): n
 const CONTEXT_KEYS = ["max_input_tokens", "context_length", "context_window", "max_context", "n_ctx", "max_seq_len", "max_position_embeddings"] as const;
 const MAX_TOKEN_KEYS = ["max_output_tokens"] as const;
 
-/** Pull models out of a list response (entries are `{id, ...}` objects or bare
- *  strings), each carrying its detected image capability and token limits.
- *  Returns null when the shape is unrecognized - the caller reports an honest
- *  error rather than a misleading empty "no models". */
+/** Pull models from a list response (objects with `id` or bare strings), each
+ *  with detected image + token limits. Null if the shape is unrecognized. */
 function extractModels(body: unknown): CustomModel[] | null {
 	const rows = modelRows(body);
 	if (rows === null) return null;

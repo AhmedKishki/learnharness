@@ -386,10 +386,8 @@ export function parseDictationSettingsBody(body: unknown): SettingsBodyResult<Di
 	return { ok: true, settings: { language: raw.language } };
 }
 
-/** The section→parser map for PUT /api/settings/[section] (the route also
- *  carries the special prompts sub-resource). The custom endpoint is NOT a
- *  section here — it is one more provider in the Keys list, connected through
- *  POST /api/custom-provider (base URL + key + discovery in one action). */
+/** The section→parser map for PUT /api/settings/[section]. The custom endpoint
+ *  is NOT a section — it connects via POST /api/custom-provider. */
 export const SETTINGS_SECTIONS = {
 	general: parseGeneralSettingsBody,
 	chat: parseSettingsBody,

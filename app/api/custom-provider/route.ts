@@ -1,19 +1,10 @@
 /**
- * The custom OpenAI-compatible endpoint's connect surface (custom-endpoint
- * wave). It is ONE provider in the Keys list, connected exactly like the
- * built-ins are connected by a key — the only extra input is a base URL.
- *
- *   GET  → the resolved non-secret config { baseUrl, models } + whether a key
- *          is present (masked status only; the key is a secret in the auth
- *          store and never enters settings.json).
- *   POST → connect. Body { baseUrl, key? }: validate + normalize the base URL,
- *          PROBE the endpoint's /models (fail fast — a broken URL never
- *          persists), then store the key (empty string clears it, absent
- *          leaves it), persist { baseUrl, models } to the settings record, and
- *          re-register the provider into piModels() with no restart.
- *
- * Discovery lives here (not a separate route) because connecting and discovering
- * are one user action: paste URL + key, get a working provider.
+ * The custom endpoint's connect surface (one provider in the Keys list).
+ *   GET  → non-secret config { baseUrl, models } + keyPresent (masked).
+ *   POST → connect: validate + normalize the base URL, probe /models (fail
+ *          fast), store the key, persist { baseUrl, models }, re-sync the
+ *          provider into piModels(). Discovery lives here because connecting
+ *          and discovering are one user action.
  */
 import {
 	deleteKey,
@@ -43,13 +34,11 @@ export async function POST(request: Request) {
 	const base = normalizeBaseUrl(typeof body?.baseUrl === "string" ? body.baseUrl : "");
 	if (!base) return Response.json({ error: "Base URL must be a valid http(s) URL" }, { status: 400 });
 
-	// A provided key is trimmed; an empty string means "clear it", an absent
-	// field means "leave whatever is stored". Only a real key rides the probe.
+	// Empty key string clears it, absent leaves it stored; only a real key rides the probe.
 	const keyProvided = typeof body?.key === "string";
 	const key = keyProvided ? (body!.key as string).trim() : undefined;
 
-	// Probe first: a URL that doesn't answer with a model list never persists,
-	// so a typo can't leave a half-configured provider behind.
+	// Probe first: a URL that doesn't answer with a model list never persists.
 	const found = await discoverModels(base, key ? key : undefined);
 	if (!found.ok) return Response.json({ error: found.error }, { status: 502 });
 

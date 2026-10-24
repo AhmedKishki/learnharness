@@ -34,8 +34,6 @@ export function effectiveSettings(): EffectiveSettings {
 	return resolveSettings(settingsStore.readSettings());
 }
 
-// Boot: register the custom OpenAI-compatible endpoint (when configured) into
-// the process-wide piModels() so its models federate with no restart — the
-// exact lifecycle the keys seam runs for keys (initAuthEnv at import). The
+// Boot: register the custom endpoint (when configured) into piModels(); the
 // POST /api/custom-provider route re-syncs after every connect.
 syncCustomProvider(effectiveSettings().customProvider);

@@ -58,10 +58,8 @@ interface CustomStatus {
  *  section can never drift from core/auth-keys.ts again. */
 const TOOL_IDS = AUTH_KEYS.map((k) => k.id) as readonly string[];
 
-/** The custom endpoint as it appears in the Add-provider dropdown — a synthetic
- *  entry (it is not one of pi-ai's 33), offered only while unconfigured; once
- *  connected it graduates to its own row like any stored provider. */
-const CUSTOM_PROVIDER_INFO: ProviderKeyInfo = {
+/** The custom endpoint's synthetic Add-provider entry (offered only while unconfigured). */
+export const CUSTOM_PROVIDER_INFO: ProviderKeyInfo = {
 	id: CUSTOM_PROVIDER.id,
 	envVar: CUSTOM_PROVIDER.envVar,
 	label: CUSTOM_PROVIDER.label,
@@ -489,10 +487,10 @@ export function KeysSection({
 						onToggle={() => setAddingCustom((v) => !v)}
 					/>
 				)}
-				{custom?.baseUrl && addingCustom && (
+				{addingCustom && (
 					<CustomEndpointEditor
-						baseUrl0={custom.baseUrl}
-						keyPresent={custom.keyPresent}
+						baseUrl0={custom?.baseUrl ?? ""}
+						keyPresent={custom?.keyPresent ?? false}
 						onSaved={async () => {
 							setAddingCustom(false);
 							await reload();
@@ -514,18 +512,6 @@ export function KeysSection({
 								setAdding(p);
 							}
 						}}
-					/>
-				)}
-				{!custom?.baseUrl && addingCustom && (
-					<CustomEndpointEditor
-						baseUrl0=""
-						keyPresent={false}
-						onSaved={async () => {
-							setAddingCustom(false);
-							await reload();
-							notifySettingsSaved("keys");
-						}}
-						onCancel={() => setAddingCustom(false)}
 					/>
 				)}
 				{adding && (
@@ -637,9 +623,7 @@ function AddProviderEditor({
 	);
 }
 
-/** The custom endpoint's status row in the provider list — one more provider,
- *  shown only once it's configured (exactly like a built-in appears only once
- *  its key is stored). Clicking re-opens the connect editor. */
+/** The custom endpoint's status row (shown once configured); clicking re-opens the editor. */
 function CustomEndpointRow({
 	status,
 	expanded,
@@ -669,12 +653,8 @@ function CustomEndpointRow({
 	);
 }
 
-/** The custom endpoint's connect editor — base URL + optional key, exactly the
- *  built-ins' key-paste flow plus the one extra URL field. Connect POSTs to
- *  /api/custom-provider (validate + discover + register); on success the parent
- *  reloads so the row appears and the catalog widens with no restart. Image
- *  capability is detected automatically from the endpoint — there is nothing to
- *  tick here. Keyless local servers (Ollama / LM Studio) connect with no key. */
+/** The custom endpoint's connect editor: base URL + key → POST /api/custom-provider
+ *  (validate + discover + register). Image capability is detected automatically. */
 function CustomEndpointEditor({
 	baseUrl0,
 	keyPresent,
@@ -691,9 +671,8 @@ function CustomEndpointEditor({
 	const [keyTouched, setKeyTouched] = useState(false);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	// A key is required to enable chatting (the send gate needs a provider key);
-	// local servers accept any value. When one is already stored, leaving the
-	// field blank keeps it.
+	// A key is required to enable chatting; local servers accept any value. A
+	// stored key is kept when the field is left blank.
 	const needsKey = !keyPresent;
 	const canConnect = Boolean(baseUrl.trim()) && (!needsKey || Boolean(key.trim()));
 

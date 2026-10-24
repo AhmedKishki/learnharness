@@ -73,10 +73,8 @@ function boot(): AuthBoot {
 	return g[BOOT_KEY];
 }
 
-/** Is `id` a WRITABLE key name — curated catalog, model-provider env
- *  var (provider-keys interlude), or the custom endpoint's reserved key
- *  (custom-endpoint wave: writable through the same seam, generic shape
- *  guard, but NOT part of the test-pinned AUTH_PROVIDER_KEYS table). */
+/** Is `id` a WRITABLE key name — curated catalog, model-provider env var, or
+ *  the custom endpoint's reserved key (writable through the same seam). */
 export function isWritableAuthKey(id: string): boolean {
 	return isKnownAuthKey(id) || isProviderEnvVar(id) || id === CUSTOM_PROVIDER.envVar;
 }

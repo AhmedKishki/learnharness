@@ -128,6 +128,6 @@ export async function PUT(request: Request, ctx: { params: Promise<{ section: st
 	// Read-modify-write ONE section of the record; everything else rides
 	// along untouched (other sections, unknown keys — sanitize preserves).
 	const next = { ...record, [section]: sectionOut };
-	const saved = writeSettingsRecord(next);
-	return Response.json({ settings: saved });
+	writeSettingsRecord(next);
+	return Response.json({ settings: next });
 }
