@@ -35,8 +35,9 @@ const customEndpointAuth: ApiKeyAuth = {
 	},
 };
 
-/** Map a discovered model to a pi-ai entry: image→input, context/maxTokens→
- *  limits (else CUSTOM_MODEL_DEFAULT_*). baseUrl is stamped per-model. */
+/** Map a discovered model to a pi-ai entry: image→input, reasoning→thinking
+ *  levels, context/maxTokens→limits (else CUSTOM_MODEL_DEFAULT_*). baseUrl is
+ *  stamped per-model. */
 function toPiModel(model: CustomModel, baseUrl: string): Model<Api> {
 	return {
 		id: model.id,
@@ -44,7 +45,10 @@ function toPiModel(model: CustomModel, baseUrl: string): Model<Api> {
 		api: "openai-completions",
 		provider: CUSTOM_PROVIDER.id,
 		baseUrl,
-		reasoning: false,
+		// Detected from the endpoint's metadata (see detectReasoning). true makes
+		// pi-ai offer the standard levels and send reasoning_effort on the wire;
+		// no thinkingLevelMap → the default off/minimal/low/medium/high set.
+		reasoning: Boolean(model.reasoning),
 		input: model.image ? ["text", "image"] : ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: model.context ?? CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW,
@@ -139,6 +143,25 @@ function detectImage(row: Record<string, unknown>): boolean {
 	return false;
 }
 
+/** Does a /models row advertise reasoning? Metadata only — no name guessing,
+ *  because a false positive sends reasoning_effort an endpoint will reject.
+ *  Trusted signals: an explicit boolean (reasoning / supports_reasoning /
+ *  thinking) or a reasoning token in the capability/parameter lists servers
+ *  publish (vLLM + OpenRouter's supported_parameters, capabilities, tags).
+ *  Absent or unrecognized → false (thinking stays "off"). */
+function detectReasoning(row: Record<string, unknown>): boolean {
+	for (const key of ["reasoning", "supports_reasoning", "thinking"] as const) {
+		if (row[key] === true) return true;
+	}
+	const architecture = isRecord(row.architecture) ? row.architecture : undefined;
+	const candidates = [row.supported_parameters, row.capabilities, row.tags, architecture?.output_modalities];
+	return candidates.some(
+		(list) =>
+			Array.isArray(list) &&
+			list.some((v) => typeof v === "string" && (/reasoning/i.test(v) || v.toLowerCase() === "thinking")),
+	);
+}
+
 /** First positive integer among `keys` on a row (endpoints name limits
  *  inconsistently). */
 function firstPositive(row: Record<string, unknown>, keys: readonly string[]): number | undefined {
@@ -167,6 +190,7 @@ function extractModels(body: unknown): CustomModel[] | null {
 		if (isRecord(row) && typeof row.id === "string" && row.id.trim()) {
 			const model: CustomModel = { id: row.id };
 			if (detectImage(row)) model.image = true;
+			if (detectReasoning(row)) model.reasoning = true;
 			const context = firstPositive(row, CONTEXT_KEYS);
 			if (context) model.context = context;
 			const maxTokens = firstPositive(row, MAX_TOKEN_KEYS);

@@ -2,8 +2,8 @@
  * Tests for the custom OpenAI-compatible endpoint (custom-endpoint wave).
  * Covers the pure core (normalizeBaseUrl, customProviderUsable, the sanitizer,
  * resolution), the deep server module (provider build + live sync + model
- * discovery incl. image-modality detection), and the catalog federation row.
- * No network: the discovery probe runs against a stubbed global fetch.
+ * discovery incl. image-modality and reasoning detection), and the catalog
+ * federation row. No network: the discovery probe runs against a stubbed fetch.
  */
 
 import assert from "node:assert/strict";
@@ -23,6 +23,7 @@ import {
 	syncCustomProvider,
 } from "../src/server/custom-provider.ts";
 import { piModels } from "../src/agent/models.ts";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 
 // ─── normalizeBaseUrl ────────────────────────────────────────────────────────
 describe("normalizeBaseUrl", () => {
@@ -72,6 +73,15 @@ describe("sanitizeUserSettings — customProvider", () => {
 		assert.equal(out?.customProvider?.baseUrl, undefined);
 		assert.equal(out?.customProvider?.models, undefined);
 	});
+	it("keeps reasoning:true and drops a non-true reasoning flag", () => {
+		const out = sanitizeUserSettings({
+			customProvider: {
+				baseUrl: "https://h/v1",
+				models: [{ id: "thinker", reasoning: true }, { id: "plain", reasoning: "yes" }],
+			},
+		});
+		assert.deepEqual(out?.customProvider?.models, [{ id: "thinker", reasoning: true }, { id: "plain" }]);
+	});
 });
 
 // ─── resolution ──────────────────────────────────────────────────────────────
@@ -112,6 +122,19 @@ describe("buildOpenAiCompatibleProvider / syncCustomProvider", () => {
 		const [big] = provider.getModels();
 		assert.equal(big!.contextWindow, 196608); // 192k from the endpoint
 		assert.equal(big!.maxTokens, 393216);
+	});
+
+	it("gives a reasoning-capable model the standard thinking levels (others stay \"off\")", () => {
+		const provider = buildOpenAiCompatibleProvider({
+			baseUrl: "http://h/v1",
+			models: [{ id: "thinker", reasoning: true }, { id: "plain" }],
+		});
+		const [thinker, plain] = provider.getModels();
+		assert.equal(thinker!.reasoning, true);
+		// No thinkingLevelMap → pi-ai's default set, same as any reasoning model.
+		assert.deepEqual(getSupportedThinkingLevels(thinker!), ["off", "minimal", "low", "medium", "high"]);
+		assert.equal(plain!.reasoning, false);
+		assert.deepEqual(getSupportedThinkingLevels(plain!), ["off"]);
 	});
 
 	it("registers on a usable sync and removes when the base URL clears", () => {
@@ -184,6 +207,29 @@ describe("discoverModels", () => {
 		assert.equal(byId["ctx"]!.maxTokens, undefined);
 		assert.equal(byId["plain"]!.context, undefined);
 	});
+	it("detects reasoning from endpoint metadata only — never from the model name", async () => {
+		stubFetch(() => ({
+			status: 200,
+			body: {
+				data: [
+					{ id: "vllm-reasoner", supported_parameters: ["temperature", "reasoning", "reasoning_effort"] },
+					{ id: "bool-reasoner", reasoning: true },
+					{ id: "thinking-flag", thinking: true },
+					{ id: "cap-reasoner", capabilities: ["completion", "reasoning"] },
+					{ id: "deepseek-r1-distill" }, // a reasoning-sounding NAME, no metadata → stays off
+				],
+			},
+		}));
+		const r = await discoverModels("http://h/v1");
+		assert.ok(r.ok);
+		const byId = Object.fromEntries(r.models.map((m) => [m.id, Boolean(m.reasoning)]));
+		assert.equal(byId["vllm-reasoner"], true);
+		assert.equal(byId["bool-reasoner"], true);
+		assert.equal(byId["thinking-flag"], true);
+		assert.equal(byId["cap-reasoner"], true);
+		assert.equal(byId["deepseek-r1-distill"], false, "name guessing would risk sending reasoning_effort to a server that rejects it");
+	});
+
 	it("guards the scheme before any fetch", async () => {
 		let called = false;
 		globalThis.fetch = (async () => {

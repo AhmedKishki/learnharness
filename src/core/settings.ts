@@ -217,12 +217,16 @@ export interface ModelsSettings {
 export const CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW = 8192;
 export const CUSTOM_MODEL_DEFAULT_MAX_TOKENS = 4096;
 
-/** One discovered custom model. `image`/`context`/`maxTokens` are detected from
- *  the endpoint's /models metadata; anything it omits falls back to a default. */
+/** One discovered custom model. `image`/`reasoning`/`context`/`maxTokens` are
+ *  detected from the endpoint's /models metadata; anything it omits falls back
+ *  to a default. */
 export interface CustomModel {
 	id: string;
 	/** Accepts image input (Vision-capable). Default false (text-only). */
 	image?: boolean;
+	/** Accepts a reasoning effort (thinking). Default false → the only
+	 *  thinking level is "off", exactly like a non-reasoning built-in. */
+	reasoning?: boolean;
 	/** Context window in tokens, from the endpoint. Absent → the default. */
 	context?: number;
 	/** Max output tokens, from the endpoint. Absent → the default. */
@@ -577,6 +581,7 @@ function sanitizeCustomProvider(raw: Record<string, unknown>): CustomProviderSet
 			if (!id) continue;
 			const model: CustomModel = { id };
 			if (rec.image === true) model.image = true;
+			if (rec.reasoning === true) model.reasoning = true;
 			const context = positiveInt(rec.context);
 			if (context) model.context = context;
 			const maxTokens = positiveInt(rec.maxTokens);
