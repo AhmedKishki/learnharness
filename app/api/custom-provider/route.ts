@@ -5,6 +5,8 @@
  *          fast), store the key, persist { baseUrl, models }, re-sync the
  *          provider into piModels(). Discovery lives here because connecting
  *          and discovering are one user action.
+ *   DELETE → disconnect: drop the stored config + the stored key and unregister
+ *          the provider (the mirror image of POST; idempotent).
  */
 import {
 	deleteKey,
@@ -55,4 +57,16 @@ export async function POST(request: Request) {
 	const next = writeSettingsRecord({ ...record, customProvider: { baseUrl: base, models: found.models } });
 	syncCustomProvider(next.customProvider);
 	return Response.json({ ok: true, models: next.customProvider?.models ?? [] });
+}
+
+/** Disconnect: forget the endpoint AND its key, then unregister the provider.
+ *  Deleting the section (rather than blanking baseUrl) keeps settings.json the
+ *  same shape as a never-connected install. Idempotent by construction. */
+export async function DELETE() {
+	const record = readSettingsRecord() ?? { version: 1 };
+	const { customProvider: _dropped, ...rest } = record;
+	const next = writeSettingsRecord(rest);
+	deleteKey(CUSTOM_PROVIDER.envVar);
+	syncCustomProvider(next.customProvider);
+	return Response.json({ ok: true });
 }

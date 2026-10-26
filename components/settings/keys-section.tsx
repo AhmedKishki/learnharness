@@ -444,6 +444,15 @@ export function KeysSection({
 		notifySettingsSaved("keys");
 	}
 
+	/** Forget the custom endpoint (config + key server-side), same rhythm as
+	 *  deleteKey: fire, re-read, broadcast so the catalog narrows everywhere. */
+	async function disconnectCustom(): Promise<void> {
+		await fetch("/api/custom-provider", { method: "DELETE" }).catch(() => undefined);
+		setAddingCustom(false);
+		await reload();
+		notifySettingsSaved("keys");
+	}
+
 	if (loading || statuses === null) {
 		return <p className="px-6 py-5 text-xs text-muted-foreground/70">Loading keys…</p>;
 	}
@@ -496,6 +505,7 @@ export function KeysSection({
 							await reload();
 							notifySettingsSaved("keys");
 						}}
+						onDelete={disconnectCustom}
 						onCancel={() => setAddingCustom(false)}
 					/>
 				)}
@@ -660,11 +670,13 @@ function CustomEndpointEditor({
 	keyPresent,
 	onSaved,
 	onCancel,
+	onDelete,
 }: {
 	baseUrl0: string;
 	keyPresent: boolean;
 	onSaved: () => void | Promise<void>;
 	onCancel: () => void;
+	onDelete?: () => void | Promise<void>;
 }) {
 	const [baseUrl, setBaseUrl] = useState(baseUrl0);
 	const [key, setKey] = useState("");
@@ -742,6 +754,20 @@ function CustomEndpointEditor({
 				>
 					Cancel
 				</button>
+				{/* Disconnect rides beside Connect, exactly the stored-key rows' Delete:
+				    quiet text, one click, no confirm — and only once there IS an
+				    endpoint (a fresh add has nothing to delete). */}
+				{onDelete && baseUrl0.trim() && (
+					<button
+						type="button"
+						onClick={() => void onDelete()}
+						disabled={busy}
+						data-testid="custom-delete"
+						className="shrink-0 text-xs text-muted-foreground/70 underline-offset-2 hover:text-red-500 hover:underline"
+					>
+						Disconnect
+					</button>
+				)}
 			</div>
 			{needsKey && (
 				<p className="text-[11px] text-muted-foreground">
