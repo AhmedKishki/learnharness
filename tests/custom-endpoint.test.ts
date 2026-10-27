@@ -2,8 +2,9 @@
  * Tests for the custom OpenAI-compatible endpoint (custom-endpoint wave).
  * Covers the pure core (normalizeBaseUrl, customProviderUsable, the sanitizer,
  * resolution), the deep server module (provider build + live sync + model
- * discovery incl. image-modality and reasoning detection), and the catalog
- * federation row. No network: the discovery probe runs against a stubbed fetch.
+ * discovery incl. image-modality, reasoning detection and the per-model user
+ * pins), the pins' strict write-side parser, and the catalog federation row.
+ * No network: the discovery probe runs against a stubbed fetch.
  */
 
 import assert from "node:assert/strict";
@@ -11,11 +12,14 @@ import { after, describe, it } from "node:test";
 import {
 	CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW,
 	CUSTOM_MODEL_DEFAULT_MAX_TOKENS,
+	CUSTOM_MODEL_PIN_FLOOR,
 	customProviderUsable,
 	normalizeBaseUrl,
+	sanitizeCustomModelOverrides,
 	sanitizeUserSettings,
 } from "../src/core/settings.ts";
 import { resolveSettings } from "../src/core/settings-resolution.ts";
+import { parseCustomModelOverridesBody } from "../src/server/settings-body.ts";
 import { CUSTOM_PROVIDER } from "../src/core/auth-keys.ts";
 import {
 	buildOpenAiCompatibleProvider,
@@ -84,10 +88,86 @@ describe("sanitizeUserSettings — customProvider", () => {
 	});
 });
 
-// ─── resolution ──────────────────────────────────────────────────────────────
+// ─── per-model pins: the read side + THE prune law ───────────────────────────
+describe("sanitizeUserSettings / sanitizeCustomModelOverrides — pins", () => {
+	it("keeps well-formed pins, clamps token counts up to the floor, keeps reasoning:false", () => {
+		const out = sanitizeUserSettings({
+			customProvider: {
+				baseUrl: "https://h/v1",
+				overrides: {
+					llama: { context: 131072, maxTokens: 8192, reasoning: true },
+					qwen: { context: 10 }, // under the floor → clamped up (clamp-never-reject on read)
+					quiet: { reasoning: false }, // a real pin, not an absent one
+					junk: { context: "big", maxTokens: -1, reasoning: "yes" }, // every field junk
+					" ": { context: 4096 }, // no usable id
+					nope: "not-an-object",
+				},
+			},
+		});
+		assert.deepEqual(out?.customProvider?.overrides, {
+			llama: { context: 131072, maxTokens: 8192, reasoning: true },
+			qwen: { context: CUSTOM_MODEL_PIN_FLOOR },
+			quiet: { reasoning: false },
+		});
+	});
+	it("prunes pins for models the endpoint no longer advertises — the single prune law", () => {
+		const pins = { a: { context: 32768 }, b: { context: 32768 } };
+		assert.deepEqual(Object.keys(sanitizeCustomModelOverrides(pins, ["a"])), ["a"]);
+		assert.deepEqual(
+			Object.keys(sanitizeCustomModelOverrides(pins)),
+			["a", "b"],
+			"no liveIds → no prune (that is the routes' call, not the record sanitizer's)",
+		);
+		assert.deepEqual(sanitizeCustomModelOverrides("nope"), {}, "a non-object map resolves empty");
+	});
+	it("drops an invalid overrides section from the record entirely", () => {
+		const out = sanitizeUserSettings({ customProvider: { baseUrl: "https://h/v1", overrides: "nope" } });
+		assert.equal(out?.customProvider?.overrides, undefined);
+	});
+});
+
+// ─── pins: the strict write side (PATCH) ──────────────────────────────────
+describe("parseCustomModelOverridesBody — the strict write side", () => {
+	it("accepts whole counts at or above the floor and the tri-state reasoning pin", () => {
+		const r = parseCustomModelOverridesBody({
+			overrides: {
+				a: { context: CUSTOM_MODEL_PIN_FLOOR, reasoning: false },
+				b: { maxTokens: 8192 },
+				c: {}, // an empty pin is legal — the sanitizer drops it on write
+			},
+		});
+		assert.ok(r.ok);
+		assert.deepEqual(r.settings, {
+			a: { context: CUSTOM_MODEL_PIN_FLOOR, reasoning: false },
+			b: { maxTokens: 8192 },
+			c: {},
+		});
+	});
+	it("rejects a count under the floor, naming the floor", () => {
+		const r = parseCustomModelOverridesBody({ overrides: { a: { context: CUSTOM_MODEL_PIN_FLOOR - 1 } } });
+		assert.equal(r.ok, false);
+		if (!r.ok) assert.ok(r.error.includes(String(CUSTOM_MODEL_PIN_FLOOR)), r.error);
+	});
+	it("rejects a fractional count, a non-boolean reasoning, and a missing overrides map", () => {
+		assert.equal(parseCustomModelOverridesBody({ overrides: { a: { context: 4096.5 } } }).ok, false);
+		assert.equal(parseCustomModelOverridesBody({ overrides: { a: { reasoning: "on" } } }).ok, false);
+		assert.equal(parseCustomModelOverridesBody({ overrides: { a: "nope" } }).ok, false);
+		assert.equal(parseCustomModelOverridesBody({}).ok, false);
+		assert.equal(parseCustomModelOverridesBody(null).ok, false);
+	});
+});
+
+// ─── resolution ──────────────────────────────────────────────────────────
 describe("resolveSettings — customProvider", () => {
 	it("resolves an absent section to concrete defaults", () => {
-		assert.deepEqual(resolveSettings(null).customProvider, { baseUrl: "", models: [] });
+		assert.deepEqual(resolveSettings(null).customProvider, { baseUrl: "", models: [], overrides: {} });
+	});
+	it("carries stored pins through to the concrete view", () => {
+		const resolved = resolveSettings({
+			version: 1,
+			customProvider: { baseUrl: "http://h/v1", models: [{ id: "a" }], overrides: { a: { context: 32768 } } },
+		});
+		assert.deepEqual(resolved.customProvider.overrides, { a: { context: 32768 } });
 	});
 });
 
@@ -122,6 +202,33 @@ describe("buildOpenAiCompatibleProvider / syncCustomProvider", () => {
 		const [big] = provider.getModels();
 		assert.equal(big!.contextWindow, 196608); // 192k from the endpoint
 		assert.equal(big!.maxTokens, 393216);
+	});
+
+	it("a user pin beats the endpoint, which beats the compiled default", () => {
+		const provider = buildOpenAiCompatibleProvider({
+			baseUrl: "http://h/v1",
+			models: [{ id: "pinned", context: 32768, maxTokens: 4096 }, { id: "detected", context: 65536 }, { id: "bare" }],
+			overrides: { pinned: { context: 131072, maxTokens: 16384 } },
+		});
+		const [pinned, detected, bare] = provider.getModels();
+		assert.equal(pinned!.contextWindow, 131072, "the pin wins over the endpoint's own number");
+		assert.equal(pinned!.maxTokens, 16384);
+		assert.equal(detected!.contextWindow, 65536, "no pin → the endpoint's value");
+		assert.equal(detected!.maxTokens, CUSTOM_MODEL_DEFAULT_MAX_TOKENS, "endpoint silent → the compiled default");
+		assert.equal(bare!.contextWindow, CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW);
+	});
+
+	it("the thinking pin is tri-state: false beats a detected-true endpoint, true beats silence", () => {
+		const provider = buildOpenAiCompatibleProvider({
+			baseUrl: "http://h/v1",
+			models: [{ id: "liar", reasoning: true }, { id: "silent" }],
+			overrides: { liar: { reasoning: false }, silent: { reasoning: true } },
+		});
+		const [liar, silent] = provider.getModels();
+		assert.equal(liar!.reasoning, false, "a server that advertises reasoning but rejects it can be pinned off");
+		assert.deepEqual(getSupportedThinkingLevels(liar!), ["off"]);
+		assert.equal(silent!.reasoning, true, "LM Studio publishes nothing; the user says otherwise");
+		assert.deepEqual(getSupportedThinkingLevels(silent!), ["off", "minimal", "low", "medium", "high"]);
 	});
 
 	it("gives a reasoning-capable model the standard thinking levels (others stay \"off\")", () => {

@@ -38,6 +38,7 @@ import {
 	type DictationSettings,
 	type CompactionSettings,
 	type CustomModel,
+	type CustomModelOverride,
 	type GraphSettings,
 	type ModelSlot,
 	type ModelSlotName,
@@ -96,8 +97,9 @@ export interface EffectiveSettings {
 	/** Compaction (owner round 14): resolved concrete — absent record
 	 *  section resolves to the factory 150k. */
 	compaction: Required<CompactionSettings>;
-	/** Custom endpoint, resolved concrete: baseUrl defaults "", models default []. */
-	customProvider: { baseUrl: string; models: CustomModel[] };
+	/** Custom endpoint, resolved concrete: baseUrl defaults "", models and
+	 *  user pins default to empty. */
+	customProvider: { baseUrl: string; models: CustomModel[]; overrides: Record<string, CustomModelOverride> };
 }
 
 /** The conversation pair's chain (BYOK, owner 2026-09-22): the chat's own
@@ -227,6 +229,7 @@ export function resolveSettings(record: UserSettings | null): EffectiveSettings 
 		customProvider: {
 			baseUrl: record?.customProvider?.baseUrl ?? "",
 			models: record?.customProvider?.models ?? [],
+			overrides: record?.customProvider?.overrides ?? {},
 		},
 	};
 }

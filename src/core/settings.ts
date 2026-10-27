@@ -217,6 +217,12 @@ export interface ModelsSettings {
 export const CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW = 8192;
 export const CUSTOM_MODEL_DEFAULT_MAX_TOKENS = 4096;
 
+/** Floor for a user-pinned token count (owner, 2026-10-27): the read side
+ *  clamps up, the write side rejects below — the compaction-floor discipline.
+ *  Pins exist because endpoints that publish no limits (LM Studio) otherwise
+ *  sit on the 8192 default with no way to say better. */
+export const CUSTOM_MODEL_PIN_FLOOR = 2_048;
+
 /** One discovered custom model. `image`/`reasoning`/`context`/`maxTokens` are
  *  detected from the endpoint's /models metadata; anything it omits falls back
  *  to a default. */
@@ -233,12 +239,26 @@ export interface CustomModel {
 	maxTokens?: number;
 }
 
+/** A user pin for one custom model: it beats what the endpoint publishes
+ *  (owner ruling — explicit user intent wins; a local server's number is
+ *  often wrong or absent). Absent field = no pin. `reasoning` is tri-state:
+ *  true forces thinking on, false forces it off (a server that advertises
+ *  reasoning but rejects reasoning_effort), absent = what discovery found. */
+export interface CustomModelOverride {
+	context?: number;
+	maxTokens?: number;
+	reasoning?: boolean;
+}
+
 /** The single custom endpoint's stored config (delta section). */
 export interface CustomProviderSettings {
 	/** Normalized base URL (see normalizeBaseUrl). Empty/absent = not configured. */
 	baseUrl?: string;
 	/** Models discovered from the endpoint (refreshed on connect). */
 	models?: CustomModel[];
+	/** User pins keyed by model id — pure user intent, never rewritten by
+	 *  discovery, pruned to the endpoint's live ids on connect. */
+	overrides?: Record<string, CustomModelOverride>;
 }
 
 /** Canonical base-URL form (single source): trims, requires absolute http(s),
@@ -562,6 +582,38 @@ function positiveInt(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
+/** One pin, clamped up to the floor (clamp-never-reject on read). */
+function sanitizeCustomModelOverride(raw: unknown): CustomModelOverride | undefined {
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+	const rec = raw as Record<string, unknown>;
+	const out: CustomModelOverride = {};
+	const context = positiveInt(rec.context);
+	if (context) out.context = Math.max(CUSTOM_MODEL_PIN_FLOOR, context);
+	const maxTokens = positiveInt(rec.maxTokens);
+	if (maxTokens) out.maxTokens = Math.max(CUSTOM_MODEL_PIN_FLOOR, maxTokens);
+	if (typeof rec.reasoning === "boolean") out.reasoning = rec.reasoning;
+	return Object.keys(out).length ? out : undefined;
+}
+
+/** THE pins map + THE prune law: well-formed entries only, ids trimmed, and
+ *  when `liveIds` is given every entry for a model the endpoint no longer
+ *  advertises drops. POST passes the discovered ids, PATCH the stored list. */
+export function sanitizeCustomModelOverrides(
+	raw: unknown,
+	liveIds?: Iterable<string>,
+): Record<string, CustomModelOverride> {
+	const out: Record<string, CustomModelOverride> = {};
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return out;
+	const live = liveIds ? new Set(liveIds) : undefined;
+	for (const [key, value] of Object.entries(raw)) {
+		const id = key.trim();
+		if (!id || (live && !live.has(id))) continue;
+		const pin = sanitizeCustomModelOverride(value);
+		if (pin) out[id] = pin;
+	}
+	return out;
+}
+
 /** The customProvider section: normalized base URL (invalid → dropped) and
  *  discovered models (ids trimmed, dupes/empties dropped; image kept only when
  *  true; token counts only as positive ints). Clamp-never-reject. */
@@ -590,6 +642,8 @@ function sanitizeCustomProvider(raw: Record<string, unknown>): CustomProviderSet
 		}
 		out.models = [...byId.values()];
 	}
+	const overrides = sanitizeCustomModelOverrides(raw.overrides);
+	if (Object.keys(overrides).length) out.overrides = overrides;
 	return out;
 }
 

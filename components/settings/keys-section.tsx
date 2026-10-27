@@ -24,7 +24,15 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { AUTH_KEYS, CUSTOM_PROVIDER, type AuthKeyStatus, type CustomModel } from "@/src/core";
+import {
+	AUTH_KEYS,
+	CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW,
+	CUSTOM_MODEL_DEFAULT_MAX_TOKENS,
+	CUSTOM_PROVIDER,
+	type AuthKeyStatus,
+	type CustomModel,
+	type CustomModelOverride,
+} from "@/src/core";
 import { SettingsGroup } from "./controls.tsx";
 import { SubscriptionConnections } from "./subscription-connections.tsx";
 import { ProviderMenuList } from "./model-menu.tsx";
@@ -49,6 +57,8 @@ interface KeysResponse {
 interface CustomStatus {
 	baseUrl: string;
 	models: CustomModel[];
+	/** User pins by model id (context / max output / thinking). */
+	overrides: Record<string, CustomModelOverride>;
 	keyPresent: boolean;
 }
 
@@ -402,6 +412,7 @@ export function KeysSection({
 			setCustom({
 				baseUrl: cp.baseUrl ?? "",
 				models: cp.models ?? [],
+				overrides: cp.overrides ?? {},
 				keyPresent: Boolean(cp.keyPresent),
 			});
 		} catch {
@@ -500,8 +511,14 @@ export function KeysSection({
 					<CustomEndpointEditor
 						baseUrl0={custom?.baseUrl ?? ""}
 						keyPresent={custom?.keyPresent ?? false}
+						models={custom?.models ?? []}
+						overrides={custom?.overrides ?? {}}
 						onSaved={async () => {
 							setAddingCustom(false);
+							await reload();
+							notifySettingsSaved("keys");
+						}}
+						onPinsSaved={async () => {
 							await reload();
 							notifySettingsSaved("keys");
 						}}
@@ -663,18 +680,68 @@ function CustomEndpointRow({
 	);
 }
 
+/** A pin row's raw input state — "" means "no pin": the endpoint's own value,
+ *  then the compiled default, decides. `reasoning` is tri-state. */
+interface PinDraft {
+	context: string;
+	maxTokens: string;
+	reasoning: "" | "on" | "off";
+}
+
+const pinDraft = (pin: CustomModelOverride | undefined): PinDraft => ({
+	context: pin?.context === undefined ? "" : String(pin.context),
+	maxTokens: pin?.maxTokens === undefined ? "" : String(pin.maxTokens),
+	reasoning: pin?.reasoning === undefined ? "" : pin.reasoning ? "on" : "off",
+});
+
+/** One draft row per discovered model, seeded from the stored pins. */
+function draftsFor(
+	models: readonly CustomModel[],
+	overrides: Record<string, CustomModelOverride>,
+): Record<string, PinDraft> {
+	return Object.fromEntries(models.map((m) => [m.id, pinDraft(overrides[m.id])]));
+}
+
+/** Drafts → the PATCH payload (replace-whole): a blank field sends nothing and
+ *  a fully blank model is absent — which IS the un-pin. */
+function pinsPayload(drafts: Record<string, PinDraft>): Record<string, CustomModelOverride> {
+	const out: Record<string, CustomModelOverride> = {};
+	for (const [id, d] of Object.entries(drafts)) {
+		const pin: CustomModelOverride = {};
+		if (d.context.trim()) pin.context = Number(d.context);
+		if (d.maxTokens.trim()) pin.maxTokens = Number(d.maxTokens);
+		if (d.reasoning !== "") pin.reasoning = d.reasoning === "on";
+		if (Object.keys(pin).length) out[id] = pin;
+	}
+	return out;
+}
+
+/** testids must survive ids carrying slashes, colons, dots. */
+const pinTestid = (prefix: string, id: string) => `${prefix}-${id.replace(/[^a-z0-9-]/gi, "_")}`;
+
 /** The custom endpoint's connect editor: base URL + key → POST /api/custom-provider
- *  (validate + discover + register). Image capability is detected automatically. */
+ *  (validate + discover + register), and the per-model limits form → PATCH (pins,
+ *  no probe, so it works with the local server switched off). Image capability is
+ *  detected automatically. */
 function CustomEndpointEditor({
 	baseUrl0,
 	keyPresent,
+	models,
+	overrides,
 	onSaved,
+	onPinsSaved,
 	onCancel,
 	onDelete,
 }: {
 	baseUrl0: string;
 	keyPresent: boolean;
+	/** The discovered models — one limits row each. */
+	models: readonly CustomModel[];
+	/** Their stored user pins. */
+	overrides: Record<string, CustomModelOverride>;
 	onSaved: () => void | Promise<void>;
+	/** Pins saved — the editor stays open (a form, not a connect). */
+	onPinsSaved: () => void | Promise<void>;
 	onCancel: () => void;
 	onDelete?: () => void | Promise<void>;
 }) {
@@ -683,10 +750,45 @@ function CustomEndpointEditor({
 	const [keyTouched, setKeyTouched] = useState(false);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	// The limits form: edited drafts over the stored pins, plus the last saved
+	// payload as the dirty baseline (the server's echo is what gets stored).
+	const [drafts, setDrafts] = useState<Record<string, PinDraft>>(() => draftsFor(models, overrides));
+	const [baseline, setBaseline] = useState(() => JSON.stringify(pinsPayload(draftsFor(models, overrides))));
+	const [pinsBusy, setPinsBusy] = useState(false);
+	const [pinsError, setPinsError] = useState<string | null>(null);
 	// A key is required to enable chatting; local servers accept any value. A
 	// stored key is kept when the field is left blank.
 	const needsKey = !keyPresent;
 	const canConnect = Boolean(baseUrl.trim()) && (!needsKey || Boolean(key.trim()));
+
+	const draftOf = (m: CustomModel): PinDraft => drafts[m.id] ?? pinDraft(overrides[m.id]);
+	const setDraft = (m: CustomModel, patch: Partial<PinDraft>) =>
+		setDrafts((prev) => ({ ...prev, [m.id]: { ...draftOf(m), ...patch } }));
+	const current = Object.fromEntries(models.map((m) => [m.id, draftOf(m)])) as Record<string, PinDraft>;
+	const dirty = JSON.stringify(pinsPayload(current)) !== baseline;
+
+	async function savePins() {
+		if (pinsBusy || !dirty) return;
+		setPinsBusy(true);
+		setPinsError(null);
+		const res = await fetch("/api/custom-provider", {
+			method: "PATCH",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ overrides: pinsPayload(current) }),
+		}).catch(() => null);
+		setPinsBusy(false);
+		if (!res || !res.ok) {
+			const b = (await res?.json().catch(() => ({}))) as { error?: string } | undefined;
+			setPinsError(res ? (b?.error ?? `Save failed (${res.status})`) : "Save failed. Check your connection.");
+			return;
+		}
+		// The server's stored map is the truth (it floors + prunes) — echo it back.
+		const body = (await res.json().catch(() => null)) as { overrides?: Record<string, CustomModelOverride> } | null;
+		const next = draftsFor(models, body?.overrides ?? pinsPayload(current));
+		setDrafts(next);
+		setBaseline(JSON.stringify(pinsPayload(next)));
+		await onPinsSaved();
+	}
 
 	async function save() {
 		if (busy || !baseUrl.trim()) return;
@@ -769,6 +871,75 @@ function CustomEndpointEditor({
 					</button>
 				)}
 			</div>
+			{models.length > 0 && (
+				<div className="flex flex-col gap-1" data-testid="custom-pins">
+					<span className="text-[11px] text-muted-foreground">
+						Model limits — blank uses the endpoint’s value, then the default
+					</span>
+					<div className="flex max-h-56 flex-col gap-1 overflow-y-auto pr-1">
+						{models.map((m) => {
+							const d = draftOf(m);
+							return (
+								<div key={m.id} className="flex items-center gap-2" data-testid={pinTestid("custom-pin-row", m.id)}>
+									<span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground" title={m.id}>
+										{m.id}
+									</span>
+									<input
+										type="text"
+										inputMode="numeric"
+										value={d.context}
+										onChange={(e) => setDraft(m, { context: e.target.value })}
+										placeholder={String(m.context ?? CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW)}
+										aria-label={`${m.id} context window in tokens`}
+										data-testid={pinTestid("custom-pin-context", m.id)}
+										disabled={pinsBusy}
+										className="h-7 w-20 shrink-0 rounded-sm border border-border bg-background px-1.5 text-right font-mono text-[11px] text-foreground outline-none placeholder:text-muted-foreground/60 focus:border-muted-foreground/50"
+									/>
+									<input
+										type="text"
+										inputMode="numeric"
+										value={d.maxTokens}
+										onChange={(e) => setDraft(m, { maxTokens: e.target.value })}
+										placeholder={String(m.maxTokens ?? CUSTOM_MODEL_DEFAULT_MAX_TOKENS)}
+										aria-label={`${m.id} max output tokens`}
+										data-testid={pinTestid("custom-pin-maxtokens", m.id)}
+										disabled={pinsBusy}
+										className="h-7 w-20 shrink-0 rounded-sm border border-border bg-background px-1.5 text-right font-mono text-[11px] text-foreground outline-none placeholder:text-muted-foreground/60 focus:border-muted-foreground/50"
+									/>
+									<select
+										value={d.reasoning}
+										onChange={(e) => setDraft(m, { reasoning: e.target.value as PinDraft["reasoning"] })}
+										aria-label={`${m.id} thinking`}
+										data-testid={pinTestid("custom-pin-reasoning", m.id)}
+										disabled={pinsBusy}
+										className="h-7 shrink-0 rounded-sm border border-border bg-background px-1 font-ui text-[11px] text-foreground outline-none focus:border-muted-foreground/50"
+									>
+										<option value="">think: auto</option>
+										<option value="on">think: on</option>
+										<option value="off">think: off</option>
+									</select>
+								</div>
+							);
+						})}
+					</div>
+					<div className="flex items-center gap-2">
+						<button
+							type="button"
+							onClick={() => void savePins()}
+							disabled={pinsBusy || !dirty}
+							data-testid="custom-pins-save"
+							className="shrink-0 text-xs text-foreground underline-offset-2 hover:underline disabled:text-muted-foreground/40 disabled:no-underline"
+						>
+							{pinsBusy ? "Saving…" : "Save limits"}
+						</button>
+						{pinsError && (
+							<p role="alert" data-testid="custom-pins-error" className="text-[11px] text-red-500">
+								{pinsError}
+							</p>
+						)}
+					</div>
+				</div>
+			)}
 			{needsKey && (
 				<p className="text-[11px] text-muted-foreground">
 					A key is required to enable chatting — local servers (Ollama, LM Studio) accept any value.

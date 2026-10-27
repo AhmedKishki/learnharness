@@ -1,24 +1,28 @@
 /**
  * The custom endpoint's connect surface (one provider in the Keys list).
- *   GET  → non-secret config { baseUrl, models } + keyPresent (masked).
- *   POST → connect: validate + normalize the base URL, probe /models (fail
- *          fast), store the key, persist { baseUrl, models }, re-sync the
- *          provider into piModels(). Discovery lives here because connecting
- *          and discovering are one user action.
+ *   GET    → non-secret config { baseUrl, models, overrides } + keyPresent (masked).
+ *   POST   → connect: validate + normalize the base URL, probe /models (fail
+ *            fast), store the key, persist { baseUrl, models }, re-sync the
+ *            provider into piModels(). Discovery lives here because connecting
+ *            and discovering are one user action. Stored user pins survive a
+ *            reconnect, pruned to the ids the endpoint still advertises.
+ *   PATCH  → store per-model pins only. No probe: pins must be editable with
+ *            the local server switched off (the case they exist for).
  *   DELETE → disconnect: drop the stored config + the stored key and unregister
- *          the provider (the mirror image of POST; idempotent).
+ *            the provider (the mirror image of POST; idempotent).
  */
 import {
 	deleteKey,
 	discoverModels,
 	effectiveSettings,
 	keyValue,
+	parseCustomModelOverridesBody,
 	readSettingsRecord,
 	saveKey,
 	syncCustomProvider,
 	writeSettingsRecord,
 } from "@/src/server";
-import { CUSTOM_PROVIDER, normalizeBaseUrl } from "@/src/core";
+import { CUSTOM_PROVIDER, normalizeBaseUrl, sanitizeCustomModelOverrides } from "@/src/core";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +31,7 @@ export async function GET() {
 	return Response.json({
 		baseUrl: cp.baseUrl,
 		models: cp.models,
+		overrides: cp.overrides,
 		keyPresent: keyValue(CUSTOM_PROVIDER.envVar) !== undefined,
 	});
 }
@@ -54,9 +59,40 @@ export async function POST(request: Request) {
 	}
 
 	const record = readSettingsRecord() ?? { version: 1 };
-	const next = writeSettingsRecord({ ...record, customProvider: { baseUrl: base, models: found.models } });
+	// User pins are never rewritten by discovery — only pruned to what the
+	// endpoint still advertises (the single prune law, core/settings.ts).
+	const overrides = sanitizeCustomModelOverrides(
+		record.customProvider?.overrides,
+		found.models.map((m) => m.id),
+	);
+	const next = writeSettingsRecord({
+		...record,
+		customProvider: { baseUrl: base, models: found.models, overrides },
+	});
 	syncCustomProvider(next.customProvider);
 	return Response.json({ ok: true, models: next.customProvider?.models ?? [] });
+}
+
+/** Store the per-model pins (replace-whole). Pruned against the STORED model
+ *  list, never a probe — an offline endpoint keeps its pins editable. */
+export async function PATCH(request: Request) {
+	const parsed = parseCustomModelOverridesBody(await request.json().catch(() => null));
+	if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 });
+
+	const cp = effectiveSettings().customProvider;
+	if (!cp.baseUrl) return Response.json({ error: "No custom endpoint configured" }, { status: 409 });
+
+	const overrides = sanitizeCustomModelOverrides(
+		parsed.settings,
+		cp.models.map((m) => m.id),
+	);
+	const record = readSettingsRecord() ?? { version: 1 };
+	const next = writeSettingsRecord({
+		...record,
+		customProvider: { baseUrl: cp.baseUrl, models: cp.models, overrides },
+	});
+	syncCustomProvider(next.customProvider);
+	return Response.json({ ok: true, overrides: next.customProvider?.overrides ?? {} });
 }
 
 /** Disconnect: forget the endpoint AND its key, then unregister the provider.

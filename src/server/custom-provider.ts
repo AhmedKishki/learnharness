@@ -15,6 +15,7 @@ import {
 	customProviderUsable,
 	normalizeBaseUrl,
 	type CustomModel,
+	type CustomModelOverride,
 	type CustomProviderSettings,
 } from "../core/settings.ts";
 import { keyValue } from "./keys.ts";
@@ -36,23 +37,31 @@ const customEndpointAuth: ApiKeyAuth = {
 };
 
 /** Map a discovered model to a pi-ai entry: image→input, reasoning→thinking
- *  levels, context/maxTokens→limits (else CUSTOM_MODEL_DEFAULT_*). baseUrl is
- *  stamped per-model. */
-function toPiModel(model: CustomModel, baseUrl: string): Model<Api> {
+ *  levels, context/maxTokens→limits. Resolution ladder (owner, 2026-10-27):
+ *  the user's pin wins, then the endpoint's own metadata, then the compiled
+ *  default — a local server that says nothing (or says 8k) can be corrected.
+ *  baseUrl is stamped per-model. */
+function toPiModel(
+	model: CustomModel,
+	baseUrl: string,
+	overrides: Record<string, CustomModelOverride>,
+): Model<Api> {
+	const pin = overrides[model.id];
 	return {
 		id: model.id,
 		name: model.id,
 		api: "openai-completions",
 		provider: CUSTOM_PROVIDER.id,
 		baseUrl,
-		// Detected from the endpoint's metadata (see detectReasoning). true makes
-		// pi-ai offer the standard levels and send reasoning_effort on the wire;
-		// no thinkingLevelMap → the default off/minimal/low/medium/high set.
-		reasoning: Boolean(model.reasoning),
+		// Pin wins; else detected from the endpoint's metadata (see
+		// detectReasoning). true makes pi-ai offer the standard levels and send
+		// reasoning_effort on the wire; no thinkingLevelMap → the default
+		// off/minimal/low/medium/high set.
+		reasoning: pin?.reasoning ?? Boolean(model.reasoning),
 		input: model.image ? ["text", "image"] : ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: model.context ?? CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW,
-		maxTokens: model.maxTokens ?? CUSTOM_MODEL_DEFAULT_MAX_TOKENS,
+		contextWindow: pin?.context ?? model.context ?? CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW,
+		maxTokens: pin?.maxTokens ?? model.maxTokens ?? CUSTOM_MODEL_DEFAULT_MAX_TOKENS,
 		type: "chat",
 	};
 }
@@ -61,13 +70,16 @@ function toPiModel(model: CustomModel, baseUrl: string): Model<Api> {
 export function buildOpenAiCompatibleProvider(input: {
 	baseUrl: string;
 	models: readonly CustomModel[];
+	/** User pins by model id (see CustomModelOverride) — absent = none. */
+	overrides?: Record<string, CustomModelOverride>;
 }): Provider<Api> {
+	const overrides = input.overrides ?? {};
 	return createProvider<Api>({
 		id: CUSTOM_PROVIDER.id,
 		name: CUSTOM_PROVIDER.label,
 		baseUrl: input.baseUrl,
 		auth: { apiKey: customEndpointAuth },
-		models: input.models.map((m) => toPiModel(m, input.baseUrl)),
+		models: input.models.map((m) => toPiModel(m, input.baseUrl, overrides)),
 		api: openAICompletionsApi(),
 	});
 }
@@ -81,7 +93,11 @@ export function syncCustomProvider(cp: CustomProviderSettings | undefined): void
 		return;
 	}
 	models.setProvider(
-		buildOpenAiCompatibleProvider({ baseUrl: normalizeBaseUrl(cp.baseUrl), models: cp.models ?? [] }),
+		buildOpenAiCompatibleProvider({
+			baseUrl: normalizeBaseUrl(cp.baseUrl),
+			models: cp.models ?? [],
+			overrides: cp.overrides ?? {},
+		}),
 	);
 }
 
