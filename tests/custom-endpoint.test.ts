@@ -15,6 +15,7 @@ import {
 	CUSTOM_MODEL_PIN_FLOOR,
 	customProviderUsable,
 	normalizeBaseUrl,
+	parseModelIds,
 	sanitizeCustomModelOverrides,
 	sanitizeUserSettings,
 } from "../src/core/settings.ts";
@@ -24,6 +25,7 @@ import { CUSTOM_PROVIDER } from "../src/core/auth-keys.ts";
 import {
 	buildOpenAiCompatibleProvider,
 	discoverModels,
+	mergeManualModels,
 	syncCustomProvider,
 } from "../src/server/custom-provider.ts";
 import { piModels } from "../src/agent/models.ts";
@@ -160,7 +162,7 @@ describe("parseCustomModelOverridesBody — the strict write side", () => {
 // ─── resolution ──────────────────────────────────────────────────────────
 describe("resolveSettings — customProvider", () => {
 	it("resolves an absent section to concrete defaults", () => {
-		assert.deepEqual(resolveSettings(null).customProvider, { baseUrl: "", models: [], overrides: {} });
+		assert.deepEqual(resolveSettings(null).customProvider, { baseUrl: "", models: [], overrides: {}, manualModels: [] });
 	});
 	it("carries stored pins through to the concrete view", () => {
 		const resolved = resolveSettings({
@@ -168,6 +170,41 @@ describe("resolveSettings — customProvider", () => {
 			customProvider: { baseUrl: "http://h/v1", models: [{ id: "a" }], overrides: { a: { context: 32768 } } },
 		});
 		assert.deepEqual(resolved.customProvider.overrides, { a: { context: 32768 } });
+	});
+	it("carries stored manual model ids through to the concrete view", () => {
+		const resolved = resolveSettings({
+			version: 1,
+			customProvider: { baseUrl: "http://h/v1", models: [{ id: "a" }], manualModels: ["a"] },
+		});
+		assert.deepEqual(resolved.customProvider.manualModels, ["a"]);
+	});
+});
+
+describe("manual model ids", () => {
+	it("parseModelIds splits a typed list on commas and whitespace, trims and dedupes", () => {
+		assert.deepEqual(parseModelIds(" doubao-seed-2.1-pro, kimi-k3.1-pro\nqwen/qwen3-max ,, kimi-k3.1-pro "), [
+			"doubao-seed-2.1-pro",
+			"kimi-k3.1-pro",
+			"qwen/qwen3-max",
+		]);
+	});
+	it("parseModelIds accepts a string array and ignores non-strings and junk", () => {
+		assert.deepEqual(parseModelIds(["a", " b ", "", 3, null, "a"]), ["a", "b"]);
+		assert.deepEqual(parseModelIds(undefined), []);
+		assert.deepEqual(parseModelIds({ id: "a" }), []);
+	});
+	it("the sanitizer keeps a clean manual list and drops an empty one", () => {
+		const kept = sanitizeUserSettings({ version: 1, customProvider: { baseUrl: "http://h/v1", manualModels: [" a ", "a", "b"] } });
+		assert.deepEqual(kept?.customProvider?.manualModels, ["a", "b"]);
+		const dropped = sanitizeUserSettings({ version: 1, customProvider: { baseUrl: "http://h/v1", manualModels: [] } });
+		assert.equal(dropped?.customProvider?.manualModels, undefined);
+	});
+	it("mergeManualModels adds typed ids with defaults and never replaces discovered metadata", () => {
+		const merged = mergeManualModels([{ id: "b", image: true, context: 65536 }], ["c", "b", "a"]);
+		assert.deepEqual(merged, [{ id: "a" }, { id: "b", image: true, context: 65536 }, { id: "c" }]);
+	});
+	it("mergeManualModels alone builds the list when discovery found nothing", () => {
+		assert.deepEqual(mergeManualModels([], ["x"]), [{ id: "x" }]);
 	});
 });
 

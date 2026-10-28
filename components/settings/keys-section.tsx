@@ -59,6 +59,7 @@ interface CustomStatus {
 	models: CustomModel[];
 	/** User pins by model id (context / max output / thinking). */
 	overrides: Record<string, CustomModelOverride>;
+	manualModels: string[];
 	keyPresent: boolean;
 }
 
@@ -413,6 +414,7 @@ export function KeysSection({
 				baseUrl: cp.baseUrl ?? "",
 				models: cp.models ?? [],
 				overrides: cp.overrides ?? {},
+				manualModels: cp.manualModels ?? [],
 				keyPresent: Boolean(cp.keyPresent),
 			});
 		} catch {
@@ -513,6 +515,7 @@ export function KeysSection({
 						keyPresent={custom?.keyPresent ?? false}
 						models={custom?.models ?? []}
 						overrides={custom?.overrides ?? {}}
+						manualModels0={custom?.manualModels ?? []}
 						onSaved={async () => {
 							setAddingCustom(false);
 							await reload();
@@ -728,6 +731,7 @@ function CustomEndpointEditor({
 	keyPresent,
 	models,
 	overrides,
+	manualModels0,
 	onSaved,
 	onPinsSaved,
 	onCancel,
@@ -739,6 +743,7 @@ function CustomEndpointEditor({
 	models: readonly CustomModel[];
 	/** Their stored user pins. */
 	overrides: Record<string, CustomModelOverride>;
+	manualModels0: readonly string[];
 	onSaved: () => void | Promise<void>;
 	/** Pins saved — the editor stays open (a form, not a connect). */
 	onPinsSaved: () => void | Promise<void>;
@@ -748,6 +753,7 @@ function CustomEndpointEditor({
 	const [baseUrl, setBaseUrl] = useState(baseUrl0);
 	const [key, setKey] = useState("");
 	const [keyTouched, setKeyTouched] = useState(false);
+	const [manualModels, setManualModels] = useState(manualModels0.join(", "));
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	// The limits form: edited drafts over the stored pins, plus the last saved
@@ -797,7 +803,7 @@ function CustomEndpointEditor({
 		const res = await fetch("/api/custom-provider", {
 			method: "POST",
 			headers: { "content-type": "application/json" },
-			body: JSON.stringify({ baseUrl, ...(keyTouched ? { key } : {}) }),
+			body: JSON.stringify({ baseUrl, manualModels, ...(keyTouched ? { key } : {}) }),
 		}).catch(() => null);
 		setBusy(false);
 		if (!res || !res.ok) {
@@ -824,6 +830,16 @@ function CustomEndpointEditor({
 					className="h-7 min-w-0 flex-1 rounded-sm border border-border bg-background px-1.5 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground/60 focus:border-muted-foreground/50"
 				/>
 			</div>
+			<input
+				type="text"
+				value={manualModels}
+				onChange={(e) => setManualModels(e.target.value)}
+				placeholder="Model IDs, comma-separated — optional, needed when the endpoint has no /models list"
+				aria-label="Custom endpoint model IDs"
+				data-testid="custom-models-input"
+				disabled={busy}
+				className="h-7 min-w-0 rounded-sm border border-border bg-background px-1.5 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground/60 focus:border-muted-foreground/50"
+			/>
 			<div className="flex items-center gap-2">
 				<input
 					type="text"

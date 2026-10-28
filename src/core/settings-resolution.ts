@@ -99,7 +99,7 @@ export interface EffectiveSettings {
 	compaction: Required<CompactionSettings>;
 	/** Custom endpoint, resolved concrete: baseUrl defaults "", models and
 	 *  user pins default to empty. */
-	customProvider: { baseUrl: string; models: CustomModel[]; overrides: Record<string, CustomModelOverride> };
+	customProvider: { baseUrl: string; models: CustomModel[]; overrides: Record<string, CustomModelOverride>; manualModels: string[] };
 }
 
 /** The conversation pair's chain (BYOK, owner 2026-09-22): the chat's own
@@ -230,6 +230,7 @@ export function resolveSettings(record: UserSettings | null): EffectiveSettings 
 			baseUrl: record?.customProvider?.baseUrl ?? "",
 			models: record?.customProvider?.models ?? [],
 			overrides: record?.customProvider?.overrides ?? {},
+			manualModels: record?.customProvider?.manualModels ?? [],
 		},
 	};
 }

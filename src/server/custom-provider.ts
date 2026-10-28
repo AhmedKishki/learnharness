@@ -131,6 +131,12 @@ export async function discoverModels(baseUrl: string, apiKey?: string): Promise<
 	}
 }
 
+export function mergeManualModels(discovered: readonly CustomModel[], manualIds: readonly string[]): CustomModel[] {
+	const byId = new Map(discovered.map((m) => [m.id, m]));
+	for (const id of manualIds) if (!byId.has(id)) byId.set(id, { id });
+	return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
 /** Model rows from a list response ({data:[…]} | {models:[…]} | bare array),
  *  or null if unrecognized. */
 function modelRows(body: unknown): unknown[] | null {
