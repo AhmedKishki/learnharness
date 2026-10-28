@@ -22,7 +22,7 @@ const TOKEN_BYTES = 32;
 
 export type PendingToolCall = { id: string; name: string; arguments: JsonObject };
 
-type BridgeCallbacks = { onCall(): void; onError(error: Error): void };
+type BridgeCallbacks = { onCall(): void; onError(error: Error): void; onCancel?(call: PendingToolCall): void };
 
 export const MCP_IDENTITY_ERROR = "claude CLI compatibility error: MCP calls must include a unique claudecode/toolUseId";
 
@@ -67,8 +67,22 @@ class ToolCallQueue {
 	private readonly results = new Map<PendingToolCall, (result: CallToolResult) => void>();
 	private waiters: ToolCallWaiter[] = [];
 
-	add(call: PendingToolCall): Promise<CallToolResult> {
-		const result = new Promise<CallToolResult>((resolve) => this.results.set(call, resolve));
+	add(call: PendingToolCall, signal: AbortSignal, onCancel?: (call: PendingToolCall) => void): Promise<CallToolResult> {
+		const result = new Promise<CallToolResult>((resolve) => {
+			const cancel = () => {
+				const settle = this.results.get(call);
+				if (!settle) return;
+				settle({ content: [{ type: "text", text: "MCP request cancelled" }], isError: true });
+				onCancel?.(call);
+			};
+			this.results.set(call, (result) => {
+				this.results.delete(call);
+				signal.removeEventListener("abort", cancel);
+				resolve(result);
+			});
+			signal.addEventListener("abort", cancel, { once: true });
+			if (signal.aborted) cancel();
+		});
 
 		this.wakeWaiters();
 
@@ -84,7 +98,6 @@ class ToolCallQueue {
 
 	resolve(call: PendingToolCall, result: ToolResultMessage): void {
 		this.results.get(call)?.(toCallToolResult(result));
-		this.results.delete(call);
 	}
 
 	list(): PendingToolCall[] {
@@ -92,7 +105,9 @@ class ToolCallQueue {
 	}
 
 	clear(): void {
-		this.results.clear();
+		for (const settle of this.results.values()) {
+			settle({ content: [{ type: "text", text: "MCP bridge closed" }], isError: true });
+		}
 
 		for (const waiter of this.waiters) waiter.reject(new Error("claude-code tool bridge closed"));
 		this.waiters = [];
@@ -116,7 +131,7 @@ function createMcpServer(tools: Tool[], queue: ToolCallQueue, callbacks?: Bridge
 	server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: tools.map(toMcpTool) }));
 
 	const seenIds = new Set<string>();
-	server.setRequestHandler(CallToolRequestSchema, (request) => {
+	server.setRequestHandler(CallToolRequestSchema, (request, extra) => {
 		const id = request.params._meta?.["claudecode/toolUseId"];
 		if (typeof id !== "string" || !id.trim() || seenIds.has(id)) {
 			const error = new McpError(ErrorCode.InvalidParams, MCP_IDENTITY_ERROR);
@@ -129,7 +144,7 @@ function createMcpServer(tools: Tool[], queue: ToolCallQueue, callbacks?: Bridge
 			throw error;
 		}
 		seenIds.add(id);
-		const result = queue.add({ id, name: request.params.name, arguments: (request.params.arguments ?? {}) as JsonObject });
+		const result = queue.add({ id, name: request.params.name, arguments: (request.params.arguments ?? {}) as JsonObject }, extra.signal, callbacks?.onCancel);
 		callbacks?.onCall();
 		return result;
 	});

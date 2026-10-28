@@ -136,6 +136,33 @@ test("tools/call stays pending until resolved and returns its text and image con
 	assert.deepEqual(bridge.getPendingToolCalls(), []);
 });
 
+test("individual MCP cancellation removes only that request and leaves the other request resolvable", async (t) => {
+	let acknowledgeCancel!: () => void;
+	const cancelled = new Promise<void>((resolve) => { acknowledgeCancel = resolve; });
+	const cancellations: string[] = [];
+	const bridge = await createToolBridge([READ_TOOL], {
+		onCall() {}, onError(error) { throw error; },
+		onCancel(call) { cancellations.push(call.id); acknowledgeCancel(); },
+	});
+	t.after(() => bridge.close());
+	const client = await connectClient(bridge);
+	t.after(() => client.close());
+	const first = client.callTool({ name: "read", arguments: { path: "a" }, _meta: { "claudecode/toolUseId": "call-a" } });
+	const controller = new AbortController();
+	const second = client.callTool({ name: "read", arguments: { path: "b" }, _meta: { "claudecode/toolUseId": "call-b" } }, undefined, { signal: controller.signal });
+	const rejected = assert.rejects(second, /cancelled B/);
+	await bridge.waitForToolCalls(2);
+	controller.abort("cancelled B");
+	await cancelled;
+	await rejected;
+	assert.deepEqual(cancellations, ["call-b"]);
+	const pending = bridge.getPendingToolCalls();
+	assert.deepEqual(pending.map((call) => call.id), ["call-a"]);
+	bridge.resolveToolCall(pending[0]!, toolResult([{ type: "text", text: "A" }]));
+	assert.deepEqual((await first).content, [{ type: "text", text: "A" }]);
+	assert.deepEqual(bridge.getPendingToolCalls(), []);
+});
+
 test("waitForToolCalls resolves once that many calls are pending, in arrival order", async (t) => {
 	const bridge = await createToolBridge([READ_TOOL, SCREENSHOT_TOOL]);
 	t.after(() => bridge.close());

@@ -392,6 +392,7 @@ class ClaudeProcess implements LiveProcess {
 	private sourceCalls: ToolCall[] = [];
 	private sourceComplete = false;
 	private admitted: PendingToolCall[] = [];
+	private readonly cancelledIds = new Set<string>();
 	private pendingError: string | undefined;
 
 	constructor(
@@ -400,6 +401,7 @@ class ClaudeProcess implements LiveProcess {
 		private readonly files: TurnFiles,
 		private turn: ClaudeTurn,
 		readonly owner: symbol,
+		readonly sessionId: string | undefined,
 		private readonly configuration: unknown,
 		private conversation: unknown[],
 	) {}
@@ -422,9 +424,9 @@ class ClaudeProcess implements LiveProcess {
 		this.setSignal(signal);
 	}
 
-	canContinue(owner: symbol, configuration: unknown, messages: Message[], results: ToolResultMessage[]): boolean {
+	canContinue(owner: symbol, sessionId: string | undefined, configuration: unknown, messages: Message[], results: ToolResultMessage[]): boolean {
 		const conversation = conversationForReuse(messages);
-		return !this.stopping && owner === this.owner
+		return !this.stopping && owner === this.owner && !!sessionId && sessionId === this.sessionId
 			&& isDeepStrictEqual(configuration, this.configuration)
 			&& isDeepStrictEqual(conversation.slice(0, this.conversation.length), this.conversation)
 			&& conversation.length === this.conversation.length + this.admitted.length
@@ -462,7 +464,7 @@ class ClaudeProcess implements LiveProcess {
 		// A parallel request can fail after the admitted slice was handed to
 		// Pi. Retain that failure for its continuation instead of silently
 		// replaying and hiding the compatibility error.
-		if (this.turn.finished && this.toolCallIds.length > 0) this.pendingError = message;
+		if (this.sessionId && this.turn.finished && this.toolCallIds.length > 0) this.pendingError = message;
 		this.turn.fail(message, "error");
 		this.kill();
 		if (this.pendingError) addLiveProcess(this);
@@ -475,6 +477,13 @@ class ClaudeProcess implements LiveProcess {
 		this.kill();
 		turn.fail(message, "error");
 		return true;
+	}
+
+	cancelCall(call: PendingToolCall): void {
+		this.cancelledIds.add(call.id);
+		// Already admitted work belongs to Pi and cannot be undone. A queued
+		// request, however, must never become executable after cancellation.
+		this.sourceCalls = this.sourceCalls.filter((intent) => intent.id !== call.id);
 	}
 
 	/** Only authenticated MCP requests, never stdout intent alone, admit side effects. */
@@ -496,7 +505,8 @@ class ClaudeProcess implements LiveProcess {
 		this.toolCallIds = pending.map((call) => call.id);
 		this.turn.admit(calls);
 		this.conversation.push(...structuredClone(conversationForReuse([this.turn.getMessage()])));
-		addLiveProcess(this);
+		if (this.sessionId) addLiveProcess(this);
+		else this.kill(); // No trusted scope: return the batch, then use fresh replay.
 	}
 
 	private readonly abort = () => {
@@ -534,11 +544,12 @@ class ClaudeProcess implements LiveProcess {
 		this.turn.handle(event);
 		if (this.turn.finished) { this.kill(); return; }
 		if (event.type === "messageStop" && this.turn.waitingForAdmission) {
-			this.sourceCalls = this.turn.getIntents();
-			if (this.sourceCalls.length === 0 || new Set(this.sourceCalls.map((call) => call.id)).size !== this.sourceCalls.length) {
+			const intents = this.turn.getIntents();
+			if (intents.length === 0 || new Set(intents.map((call) => call.id)).size !== intents.length) {
 				this.fail("claude CLI emitted an invalid tool batch");
 				return;
 			}
+			this.sourceCalls = intents.filter((call) => !this.cancelledIds.has(call.id));
 			this.sourceComplete = true;
 			this.flushAdmissions();
 		}
@@ -559,17 +570,17 @@ class ClaudeProcess implements LiveProcess {
 	}
 }
 
-function continueLiveProcess(turn: ClaudeTurn, owner: symbol, configuration: unknown, messages: Message[], signal: AbortSignal | undefined): boolean {
+function continueLiveProcess(turn: ClaudeTurn, owner: symbol, sessionId: string | undefined, configuration: unknown, messages: Message[], signal: AbortSignal | undefined): boolean {
 	const assistantIndex = messages.findLastIndex((message) => message.role === "assistant");
 	const assistant = messages[assistantIndex];
 	if (assistant?.role !== "assistant") return false;
 	const ids = assistant.content.flatMap((block) => block.type === "toolCall" ? [block.id] : []);
-	const process = getLiveProcess(ids, owner);
+	const process = getLiveProcess(ids, owner, sessionId);
 	if (!(process instanceof ClaudeProcess)) return false;
 	if (process.consumeFailure(owner, turn)) return true;
 	const trailing = messages.slice(assistantIndex + 1);
 	const results = trailing.filter((message) => message.role === "toolResult");
-	if (trailing.length !== results.length || !process.canContinue(owner, configuration, messages, results)) {
+	if (trailing.length !== results.length || !process.canContinue(owner, sessionId, configuration, messages, results)) {
 		process.kill();
 		return false;
 	}
@@ -604,6 +615,7 @@ async function startProcess(
 	const bridge = await createToolBridge(input.tools, {
 		onCall: () => cliProcess?.flushAdmissions(),
 		onError: (error) => cliProcess?.fail(error.message),
+		onCancel: (call) => cliProcess?.cancelCall(call),
 	});
 	let files: TurnFiles;
 	try {
@@ -639,7 +651,7 @@ async function startProcess(
 		return;
 	}
 
-	cliProcess = new ClaudeProcess(child, bridge, files, turn, owner, configuration, structuredClone(conversationForReuse(context.messages)));
+	cliProcess = new ClaudeProcess(child, bridge, files, turn, owner, options?.sessionId, configuration, structuredClone(conversationForReuse(context.messages)));
 	cliProcess.start(toStreamJsonLine(input.userContent), options?.signal);
 }
 
@@ -650,7 +662,7 @@ export function createClaudeCodeStreamFunction(runClaude: RunClaude): StreamFunc
 		const turn = new ClaudeTurn(stream, model);
 
 		const configuration = configurationForReuse(model, context, toEffort(options?.reasoning));
-		if (continueLiveProcess(turn, owner, configuration, context.messages, options?.signal)) return stream;
+		if (continueLiveProcess(turn, owner, options?.sessionId, configuration, context.messages, options?.signal)) return stream;
 
 		startProcess(runClaude, turn, model, context, options, owner, configuration).catch((error: unknown) => {
 			console.error("claude CLI turn failed:", error);

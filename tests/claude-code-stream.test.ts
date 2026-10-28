@@ -45,6 +45,7 @@ const HOLD = JSON.stringify({ fake: "hold" });
 const REPLY = JSON.stringify({ fake: "reply" });
 const CLEANUP_TIMEOUT_MS = 2000;
 
+const SESSION_ID = "stream-test-chat";
 const READ_TOOL: Tool = { name: "read", description: "Read a file", parameters: { type: "object", properties: {} } };
 const HI: Message = { role: "user", content: "hi", timestamp: 0 };
 
@@ -156,7 +157,7 @@ async function runScenario(
 		messages: [{ role: "user", content: "hi", timestamp: 0 }],
 		tools: [READ_TOOL, { name: "get_weather", description: "Weather", parameters: { type: "object", properties: {} } }],
 	});
-	const events = await collectEvents(createClaudeCodeStreamFunction(runClaude)(model, context, options));
+	const events = await collectEvents(createClaudeCodeStreamFunction(runClaude)(model, context, { sessionId: SESSION_ID, ...options }));
 
 	return { events, calls };
 }
@@ -210,7 +211,7 @@ async function runTurn(
 ): Promise<AssistantMessage> {
 	const context = normalizeContext({ systemPrompt: "You are a tutor.", messages, tools: [READ_TOOL] });
 
-	const done = getLastEvent(await collectEvents(streamFunction(getModel(), context, options)));
+	const done = getLastEvent(await collectEvents(streamFunction(getModel(), context, { sessionId: SESSION_ID, ...options })));
 
 	assert.ok(done.type === "done", `turn ended with ${done.type}`);
 
@@ -852,7 +853,7 @@ test("a parallel identity failure after an admitted slice is reported on continu
 	const message = await runTurn(stream, [HI]);
 	getOnlyCall(calls).child.send("continue");
 	await waitForExit(getOnlyCall(calls).child);
-	const events = await collectEvents(stream(getModel(), normalizeContext({ systemPrompt: "You are a tutor.", messages: [HI, message, toToolResult(first, "A")], tools: [READ_TOOL] })));
+	const events = await collectEvents(stream(getModel(), normalizeContext({ systemPrompt: "You are a tutor.", messages: [HI, message, toToolResult(first, "A")], tools: [READ_TOOL] }), { sessionId: SESSION_ID }));
 	assert.match(getErrorMessage(events) ?? "", /compatibility error.*claudecode\/toolUseId/);
 	assert.equal(calls.length, 1, "must not hide the compatibility failure by spawning again");
 	await assertCleanedUp(getOnlyCall(calls));
@@ -867,7 +868,7 @@ test("output after MCP admission fails continuation instead of silently replayin
 	const message = await runTurn(stream, [HI]);
 	getOnlyCall(calls).child.send("continue");
 	await waitForExit(getOnlyCall(calls).child);
-	const events = await collectEvents(stream(getModel(), normalizeContext({ systemPrompt: "You are a tutor.", messages: [HI, message, toToolResult(call, "A")], tools: [READ_TOOL] })));
+	const events = await collectEvents(stream(getModel(), normalizeContext({ systemPrompt: "You are a tutor.", messages: [HI, message, toToolResult(call, "A")], tools: [READ_TOOL] }), { sessionId: SESSION_ID }));
 	assert.match(getErrorMessage(events) ?? "", /moved on while.*waiting for results/);
 	assert.equal(calls.length, 1);
 	await assertCleanedUp(getOnlyCall(calls));
@@ -927,12 +928,54 @@ for (const change of ["model", "effort", "system prompt", "tool schema", "tool d
 			}],
 		});
 		const model = change === "model" ? CLAUDE_CODE_MODELS[1]! : getModel();
-		const events = await collectEvents(stream(model, context, change === "effort" ? { reasoning: "high" } : undefined));
+		const events = await collectEvents(stream(model, context, { sessionId: SESSION_ID, ...(change === "effort" ? { reasoning: "high" as const } : {}) }));
 		assert.equal(getLastEvent(events).type, "done");
 		assert.equal(fresh.calls.length, 1, "must start a fresh CLI rather than silently use stale configuration");
 		await assertCleanedUp(getOnlyCall(waiting.calls));
 	});
 }
+
+for (const identicalHistory of [false, true]) test(`one registered stream isolates two sessions with colliding tool IDs and ${identicalHistory ? "identical" : "different"} histories`, async (t) => {
+	const call: ToolUse = { id: "toolu_shared_singleton", name: "read", arguments: { path: "same" } };
+	const one = createFakeRun(t, [...toToolUseMessage([call]), callTool(call), REPLY]);
+	const two = createFakeRun(t, [...toToolUseMessage([call]), callTool(call), REPLY]);
+	let spawns = 0;
+	const stream = createClaudeCodeStreamFunction((args, options) => {
+		const run = [one, two][spawns++];
+		assert.ok(run, "a valid continuation must not spawn another CLI");
+		return run.runClaude(args, options);
+	});
+	const historyOne = [HI];
+	const historyTwo: Message[] = identicalHistory ? [HI] : [{ role: "user", content: "another conversation", timestamp: 0 }];
+	const messageOne = await runTurn(stream, historyOne, { sessionId: "chat-one" });
+	const messageTwo = await runTurn(stream, historyTwo, { sessionId: "chat-two" });
+	// B returns first while A is earlier in the registry: IDs and even full
+	// history must not let B resolve A's authenticated MCP request.
+	const replyTwo = await runTurn(stream, [...historyTwo, messageTwo, toToolResult(call, "from two")], { sessionId: "chat-two" });
+	const replyOne = await runTurn(stream, [...historyOne, messageOne, toToolResult(call, "from one")], { sessionId: "chat-one" });
+	assert.equal(getText(replyTwo), "from two");
+	assert.equal(getText(replyOne), "from one");
+	assert.equal(spawns, 2);
+	await assertCleanedUp(getOnlyCall(one.calls));
+	await assertCleanedUp(getOnlyCall(two.calls));
+});
+
+test("a caller without a session ID uses fresh replay and retains no held process", async (t) => {
+	const call: ToolUse = { id: "toolu_no_scope", name: "read", arguments: { path: "a" } };
+	const waiting = createFakeRun(t, [...toToolUseMessage([call]), callTool(call), REPLY]);
+	const stdinDir = mkdtempSync(join(tmpdir(), "claude-unscoped-replay-"));
+	t.after(() => rmSync(stdinDir, { recursive: true, force: true }));
+	const stdinFile = join(stdinDir, "stdin.jsonl");
+	const fresh = createFakeRun(t, readFixtureLines("text.jsonl"), { FAKE_CLAUDE_STDIN: stdinFile });
+	const stream = createClaudeCodeStreamFunction((args, options) => (waiting.calls.length === 0 ? waiting : fresh).runClaude(args, options));
+	const message = await runTurn(stream, [HI], { sessionId: undefined });
+	await assertCleanedUp(getOnlyCall(waiting.calls));
+	const reply = await runTurn(stream, [HI, message, toToolResult(call, "the preserved answer")], { sessionId: undefined });
+	assert.equal(reply.stopReason, "stop");
+	assert.equal(fresh.calls.length, 1);
+	assert.match(readFileSync(stdinFile, "utf8"), /the preserved answer/);
+	await assertCleanedUp(getOnlyCall(fresh.calls));
+});
 
 for (const sharedIdentity of [false, true]) test(`two concurrent stream owners keep separate processes${sharedIdentity ? " even with identical call IDs and arguments" : ""}`, async (t) => {
 	const readOne: ToolUse = { id: "toolu_concurrent_one", name: "read", arguments: { path: "one" } };

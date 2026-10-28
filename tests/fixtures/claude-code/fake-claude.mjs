@@ -6,17 +6,20 @@
  *   {"fake":"exit","code":1,"stderr":"..."}  write stderr and exit with that code
  *   {"fake":"call","id":"toolu_...","name":"read","arguments":{...}}  call the MCP bridge and wait for its result
  *   {"fake":"start-call",...}                start the same request without waiting for its result
+ *   {"fake":"cancel-call","id":"toolu_..."} cancel an individual pending MCP request
+ *   {"fake":"checkpoint"}                   notify the parent after previous sends finish
  *   {"fake":"wait-for-message"}              pause until the test releases the child over IPC
  *   {"fake":"ignore-term"}                   ignore SIGTERM to exercise kill escalation
  *   {"fake":"reply"}                         stream one assistant message whose text is every result so far, joined by " | "
  * FAKE_CLAUDE_STDIN, when set, receives the stdin it read.
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { once } from "node:events";
+import { on } from "node:events";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
+const parentMessages = on(process, "message");
 const HOLD_INTERVAL_MS = 60_000;
 const BRIDGE_SERVER_NAME = "learnharness";
 
@@ -28,11 +31,16 @@ function streamEvent(event) {
 	return JSON.stringify({ type: "stream_event", event });
 }
 
+let lastSend = Promise.resolve();
+
 async function connectBridge(mcpConfig) {
 	const { url, headers } = JSON.parse(mcpConfig).mcpServers[BRIDGE_SERVER_NAME];
 	const client = new Client({ name: "fake-claude", version: "1.0.0" });
 
-	await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers } }));
+	const transport = new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers } });
+	const send = transport.send.bind(transport);
+	transport.send = (...args) => (lastSend = send(...args));
+	await client.connect(transport);
 	return client;
 }
 
@@ -54,12 +62,25 @@ if (process.env.FAKE_CLAUDE_STDIN) writeFileSync(process.env.FAKE_CLAUDE_STDIN, 
 let bridge = null;
 const results = [];
 const pendingResults = [];
+const controllers = new Map();
+const cancelled = new Set();
 const lines = readFileSync(process.env.FAKE_CLAUDE_SCENARIO, "utf8").split("\n").filter(Boolean);
 for (const line of lines) {
 	const directive = JSON.parse(line);
 
+	if (directive.fake === "cancel-call") {
+		cancelled.add(directive.id);
+		controllers.get(directive.id)?.abort("cancelled by fake CLI");
+		await lastSend;
+		continue;
+	}
+	if (directive.fake === "checkpoint") {
+		await lastSend;
+		process.send?.({ fake: "checkpoint" });
+		continue;
+	}
 	if (directive.fake === "wait-for-message") {
-		await once(process, "message");
+		await parentMessages.next();
 		continue;
 	}
 	if (directive.fake === "hold") {
@@ -78,14 +99,17 @@ for (const line of lines) {
 	}
 	if (directive.fake === "call" || directive.fake === "start-call") {
 		bridge ??= await connectBridge(mcpConfig);
+		const controller = new AbortController();
+		controllers.set(directive.id, controller);
 		const request = bridge.callTool({
 			name: directive.name,
 			arguments: directive.arguments,
 			...(directive.id !== undefined ? { _meta: { "claudecode/toolUseId": directive.id } } : {}),
-		});
+		}, undefined, { signal: controller.signal });
 		if (directive.fake === "start-call") {
-			pendingResults.push(request);
+			pendingResults.push({ id: directive.id, request });
 			void request.catch(() => {});
+			await lastSend;
 		} else {
 			const result = await request;
 			results.push(result.content.map((block) => block.text).join(""));
@@ -93,7 +117,7 @@ for (const line of lines) {
 		continue;
 	}
 	if (directive.fake === "reply") {
-		for (const result of await Promise.all(pendingResults.splice(0))) results.push(result.content.map((block) => block.text).join(""));
+		for (const result of await Promise.all(pendingResults.splice(0).filter(({ id }) => !cancelled.has(id)).map(({ request }) => request))) results.push(result.content.map((block) => block.text).join(""));
 		await writeReply(results.join(" | "));
 		continue;
 	}

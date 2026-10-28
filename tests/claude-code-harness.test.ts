@@ -78,9 +78,9 @@ function createFakeRun(t: TestContext, scenarios: string[][]): FakeRun {
 		const child = spawn(process.execPath, [FAKE_CLAUDE, ...args], {
 			cwd: options.cwd,
 			env: { ...options.env, FAKE_CLAUDE_SCENARIO: scenarioFile, FAKE_CLAUDE_STDIN: stdinFile },
-			stdio: "pipe",
-		});
-		t.after(() => child.kill());
+			stdio: ["pipe", "pipe", "pipe", "ipc"],
+		}) as ChildProcessWithoutNullStreams;
+		t.after(() => child.kill("SIGKILL"));
 
 		children.push(child);
 		stdinFiles.push(stdinFile);
@@ -104,7 +104,7 @@ function createAgentFactory(fakeRun: FakeRun): Parameters<typeof handleChatReque
 
 	const engine: PiEngine = { model, streamFn: createClaudeCodeStreamFunction(fakeRun.runClaude) };
 
-	return (options) => createTeacherAgent(undefined, { engine, messages: options.messages });
+	return (options) => createTeacherAgent(undefined, { engine, chatId: options.chatId, messages: options.messages });
 }
 
 async function runChatTurn(chatId: string, input: object, agentFactory: Parameters<typeof handleChatRequest>[1]): Promise<void> {
@@ -194,6 +194,40 @@ test("a question pauses later calls from the same CLI response until the learner
 	assert.ok(getLastAssistantText(chatId).includes(ANSWER_TEXT));
 	assert.ok(getLastAssistantText(chatId).includes("HTTP next"));
 	await waitForExit(fakeRun.children[0]!);
+});
+
+test("an individually cancelled MCP question queued behind a learner wait never executes", async (t) => {
+	const cancelledId = "toolu_cancelled_question";
+	const question = "This cancelled question must never be posed";
+	const scenario = toAskScenario();
+	scenario.splice(4, 0,
+		streamEvent({ type: "content_block_start", index: 1, content_block: { type: "tool_use", id: cancelledId, name: "mcp__learnharness__ask_user_question", input: {} } }),
+		streamEvent({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: JSON.stringify({ question }) } }),
+		streamEvent({ type: "content_block_stop", index: 1 }),
+	);
+	scenario.splice(scenario.length - 2, 2,
+		JSON.stringify({ fake: "start-call", id: ASK_ID, name: "ask_user_question", arguments: ASK_INPUT }),
+		JSON.stringify({ fake: "wait-for-message" }),
+		JSON.stringify({ fake: "start-call", id: cancelledId, name: "ask_user_question", arguments: { question } }),
+		JSON.stringify({ fake: "cancel-call", id: cancelledId }),
+		JSON.stringify({ fake: "checkpoint" }),
+		JSON.stringify({ fake: "reply" }),
+	);
+	const fakeRun = createFakeRun(t, [scenario]);
+	const factory = createAgentFactory(fakeRun);
+	const chatId = createClaudeCodeChat(t);
+	await runChatTurn(chatId, { type: "text", text: "teach me sockets" }, factory);
+	assert.equal(danglingQuestionOf(chatStore.getChat(chatId)?.messages ?? [])?.toolCallId, ASK_ID);
+	const child = fakeRun.children[0]!;
+	const cancelledOnServer = once(child, "message", { signal: AbortSignal.timeout(TURN_TIMEOUT_MS) });
+	child.send("queue and cancel B");
+	assert.deepEqual((await cancelledOnServer)[0], { fake: "checkpoint" });
+	await runChatTurn(chatId, toAnswerInput(), factory);
+	assert.equal(fakeRun.children.length, 1);
+	assert.equal(danglingQuestionOf(chatStore.getChat(chatId)?.messages ?? []), null);
+	assert.equal(JSON.stringify(chatStore.getChat(chatId)?.messages).includes(cancelledId), false, "cancelled B must never reach native tool execution or persistence");
+	assert.ok(getLastAssistantText(chatId).includes(ANSWER_TEXT));
+	await waitForExit(child);
 });
 
 test("a question answered after the idle timeout starts a fresh CLI process that replays the question and answer", async (t) => {
