@@ -5,6 +5,8 @@ import { test } from "node:test";
 import { createRoot } from "react-dom/client";
 import { parseHTML } from "linkedom";
 import { QuestionDock } from "../components/question-dock.tsx";
+import { SessionModel } from "../components/session-core.ts";
+import { findPendingToolCall } from "../src/core/pending.ts";
 import { pendingQuestionOf, type LhMessage } from "../src/core/native-messages.ts";
 import type { QuizToolInput } from "../src/core/question-core.ts";
 
@@ -46,6 +48,65 @@ for (const reusedId of [false, true]) {
 		} finally { await act(async () => root.unmount()); host.remove(); }
 	});
 }
+
+test("live question validation → turn_end placeholder → canonical sync keeps the same form and typed reasoning", async () => {
+	const host = document.createElement("div"); document.body.append(host);
+	const root = createRoot(host);
+	const encoder = new TextEncoder();
+	let wire!: ReadableStreamDefaultController<Uint8Array>;
+	const body = new ReadableStream<Uint8Array>({ start(controller) { wire = controller; } });
+	const model = new SessionModel({ chatId: "fixture", initialMessages: [], fetch: async () => new Response(body) });
+	let submitted: { thinking?: string } | undefined;
+	const render = () => {
+		const state = model.getState();
+		const pending = findPendingToolCall(state.messages, pendingQuestionOf(state.nativeMessages));
+		root.render(pending ? <QuestionDock key={`question:${pending.key}`}
+			toolName="quiz" toolCallId={pending.toolCallId} input={pending.input as QuizToolInput}
+			expanded onExpand={() => {}} onSubmit={answer => { submitted = answer; }} dictationClaim={false} /> : null);
+	};
+	model.onChange = render;
+	const event = async (value: unknown) => {
+		await act(async () => { wire.enqueue(encoder.encode(`data: ${JSON.stringify(value)}\n\n`)); });
+	};
+	let consume: Promise<void> | undefined;
+	try {
+		await act(async () => { consume = model.resumeStream(false); });
+		const saved = question("saved", "q1", "Streamed question");
+		const { id: _savedId, ...message } = saved;
+		await event({ type: "message_start", message });
+		await event({ type: "message_end", message });
+		assert.equal(host.querySelector('[data-testid="question-dock"]'), null, "validation still gates the form");
+		await event({ type: "tool_execution_end", toolCallId: "q1", toolName: "quiz", isError: false,
+			result: { content: [{ type: "text", text: "Question posed" }], details: null } });
+		const form = host.querySelector('[data-testid="question-dock"]');
+		assert.ok(form);
+		const occurrence = pendingQuestionOf(model.getState().nativeMessages)!;
+		await act(async () => {
+			host.querySelector<HTMLButtonElement>('[role="radio"]')!.click();
+			const editor = host.querySelector<HTMLElement>('[data-testid="thinking-field"] [data-file-path-input]')!;
+			editor.textContent = "Keep my typed reasoning";
+			editor.dispatchEvent(new window.Event("input", { bubbles: true }));
+		});
+		await event({ type: "turn_end", message, toolResults: [{ role: "toolResult", toolCallId: "q1", toolName: "quiz",
+			content: [{ type: "text", text: "Question posed" }], details: null, isError: false, timestamp: 1 }] });
+		assert.ok(host.querySelector('[data-testid="question-dock"]') === form, "placeholder must never unmount the form");
+		assert.deepEqual(pendingQuestionOf(model.getState().nativeMessages), occurrence, "exact native occurrence stays pending");
+		await act(async () => { model.setMessages([saved]); });
+		assert.ok(host.querySelector('[data-testid="question-dock"]') === form, "canonical save must not reset the form either");
+		assert.ok(host.querySelector('[role="radio"][aria-checked="true"]'));
+		assert.equal(host.querySelector('[data-testid="thinking-field"] [data-file-path-input]')!.textContent, "Keep my typed reasoning");
+		await act(async () => { host.querySelector('form')!.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })); });
+		assert.equal(submitted?.thinking, "Keep my typed reasoning", "the React form state, not only DOM text, survived");
+	} finally {
+		await act(async () => {
+			wire.enqueue(encoder.encode("data: [DONE]\n\n")); wire.close();
+			await consume;
+			root.unmount();
+		});
+		model.onChange = undefined;
+		host.remove();
+	}
+});
 
 test("saving a unique live question preserves its mounted form and selection", async () => {
 	const host = document.createElement("div"); document.body.append(host);

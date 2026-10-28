@@ -1020,6 +1020,28 @@ describe("answer submission recovery", () => {
 		});
 	}
 
+	it("accepts immediate/recovery submissions and dismissals while a live question placeholder is in the tail", async () => {
+		for (const dismiss of [false, true]) {
+			let posts = 0;
+			const m = model({ initialMessages: [question], fetch: async (url) => {
+				if (String(url) === "/api/chat" || String(url).endsWith("/dismiss")) {
+					posts++;
+					return new Response("refused", { status: 500 });
+				}
+				return Response.json({ messages: [question], turnInFlight: false });
+			} });
+			m.applyWireEvent({ type: "turn_end", message: question, toolResults: [{ role: "toolResult", toolCallId: "q1", toolName: "quiz",
+				content: [{ type: "text", text: "Question posed" }], details: null, isError: false, timestamp: 1 }] });
+			const key = pendingQuestionOf([question])!.key;
+			if (dismiss) await m.dismissQuestion("q1", answer, key);
+			else {
+				await m.submitAnswer("quiz", "q1", answer, key);
+				await m.submitAnswer("quiz", "q1", answer, key);
+			}
+			assert.equal(posts, dismiss ? 1 : 2, "placeholder must not reject the render's question identity");
+		}
+	});
+
 	it("does not mistake an old same-id answer for resolution of the current question during recovery", async () => {
 		let posts = 0;
 		const newer = { ...question, id: "new-question" } as LhMessage;

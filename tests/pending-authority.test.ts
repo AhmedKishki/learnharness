@@ -93,6 +93,26 @@ test("unique question keys survive live-to-persisted message stamps without rese
 	assert.notEqual(pending([live])!.messageId, pending([persisted])!.messageId);
 });
 
+test("only temporary successful question placeholders are excluded from client pending authority", () => {
+	const message = assistant("new", "q");
+	const placeholder = { ...newAnswerResult("q", "quiz", {} as never), id: "c_placeholder", details: null };
+	for (const tool of ["quiz", "probe", "ask_user_question", "explain", "recall"]) {
+		const own = { ...placeholder, toolName: tool };
+		assert.equal(pendingQuestionOf([message, own])?.toolCallId, "q");
+		assert.equal(danglingQuestionOf([message, own]), null, "server/persisted policy does not change");
+	}
+	for (const result of [
+		{ ...placeholder, id: "persisted-null-result" },
+		{ ...placeholder, details: undefined },
+		{ ...placeholder, isError: true },
+		{ ...placeholder, isError: true, content: [{ type: "text" as const, text: "Operation aborted" }] },
+		{ ...placeholder, toolName: "visual" },
+		{ ...newAnswerResult("q", "quiz", { kind: "quiz", answers: [], dontKnow: true } as never), id: "c_answer" },
+	]) {
+		assert.equal(pendingQuestionOf([message, result]), null, "real answers, persisted results and failures still resolve the call");
+	}
+});
+
 test("native occurrence checks preserve every question tool and its own live validation gate", () => {
 	for (const tool of ["quiz", "probe", "ask_user_question", "explain", "recall"]) {
 		const message = assistant("live", "q");

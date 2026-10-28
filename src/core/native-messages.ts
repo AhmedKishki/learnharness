@@ -682,7 +682,10 @@ export function danglingQuestionOf(
  * by its persisted stamp. Only colliding ids need an occurrence-qualified
  * draft/reset key; this never changes stored ids or the answer wire. */
 export function pendingQuestionOf(messages: readonly LhMessage[]): PendingQuestion | null {
-	const question = questionOccurrenceOf(messages);
+	// turn_end includes the temporary questionResult acknowledgement. The
+	// view ignores it too: it is NOT the learner's answer. Exclude it only
+	// from client authority, leaving persisted/server result policy intact.
+	const question = questionOccurrenceOf(messages.filter(message => !isLiveQuestionPlaceholder(message)));
 	if (!question) return null;
 	let occurrences = 0;
 	for (const message of messages) {
@@ -698,6 +701,15 @@ export function pendingQuestionOf(messages: readonly LhMessage[]): PendingQuesti
 		...question,
 		key: occurrences > 1 ? JSON.stringify([question.messageId, question.contentIndex, question.toolCallId]) : question.toolCallId,
 	};
+}
+
+/** Only the transient c_ result with the questionResult contract qualifies.
+ * Real answers have details; errors/aborts remain resolving results. A saved
+ * null result is not reinterpreted by this client-only compatibility seam. */
+function isLiveQuestionPlaceholder(message: LhMessage): boolean {
+	return message.role === "toolResult" && message.id.startsWith("c_") &&
+		!message.isError && message.details === null &&
+		(QUESTION_TOOLS as readonly string[]).includes(message.toolName);
 }
 
 /** Shared native authority: newest assistant only, siblings in call order. */
