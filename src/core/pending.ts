@@ -105,14 +105,14 @@ export function filterEnabledTools<T>(tools: Record<string, T>, enabled?: Enable
 	return out;
 }
 
-function findPending(messages: UIMessage[], names: readonly string[]): PendingToolCall | null {
+function findPending(messages: UIMessage[], names: readonly string[], toolCallId?: string): PendingToolCall | null {
 	for (let m = messages.length - 1; m >= 0; m--) {
 		const msg = messages[m]!;
 		for (let p = 0; p < msg.parts.length; p++) {
 			const part = msg.parts[p]!;
 			if (isToolUIPart(part) && part.state === "input-available") {
 				const tool = part.type.slice("tool-".length);
-				if (names.includes(tool)) {
+				if (names.includes(tool) && (toolCallId === undefined || part.toolCallId === toolCallId)) {
 					return { toolCallId: part.toolCallId as string, tool, input: part.input };
 				}
 			}
@@ -121,8 +121,12 @@ function findPending(messages: UIMessage[], names: readonly string[]): PendingTo
 	return null;
 }
 
-export function findPendingToolCall(messages: UIMessage[]): PendingToolCall | null {
-	return findPending(messages, QUESTION_TOOLS);
+/** Grouped view messages lose native assistant boundaries. When the native
+ * record supplies an authority, expose only that call after view validation.
+ * null means no native question is pending; undefined keeps view-only callers. */
+export function findPendingToolCall(messages: UIMessage[], toolCallId?: string | null): PendingToolCall | null {
+	if (toolCallId === null) return null;
+	return findPending(messages, QUESTION_TOOLS, toolCallId);
 }
 
 // ─── Turn activity label (2026-09-19, the “Writing a question…” fix) ──────

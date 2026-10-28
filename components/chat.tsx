@@ -70,6 +70,7 @@ import { CoverageRing } from "@/components/extraction-coverage";
 import { Button } from "@/components/ui/button";
 import {
 	activeProblemOf,
+	danglingQuestionOf,
 	dismissedAnswer,
 	endsInFailedTurn,
 	findPendingToolCall,
@@ -444,7 +445,7 @@ export function Chat({
 		// mount-only by design (turnInFlight read at initial value)
 	}, []);
 
-	const pending = findPendingToolCall(messages);
+	const pending = findPendingToolCall(messages, danglingQuestionOf(nativeMessages)?.toolCallId ?? null);
 	// The abort handler reads the pending question from a ref (the window
 	// listener is mount-scoped; the value it needs is render-scoped).
 	const pendingRef = useRef(pending);
