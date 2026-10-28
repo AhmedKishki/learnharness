@@ -15,6 +15,7 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { on } from "node:events";
+import { createInterface } from "node:readline";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -56,8 +57,29 @@ async function writeReply(text) {
 const mcpConfig = readFileSync(process.argv[process.argv.indexOf("--mcp-config") + 1], "utf8");
 
 let input = "";
-for await (const chunk of process.stdin) input += chunk;
-if (process.env.FAKE_CLAUDE_STDIN) writeFileSync(process.env.FAKE_CLAUDE_STDIN, input);
+let receiveUser;
+const userReceived = new Promise((resolve) => { receiveUser = resolve; });
+createInterface({ input: process.stdin }).on("line", async (line) => {
+	input += `${line}\n`;
+	const message = JSON.parse(line);
+	if (message.type !== "control_request") {
+		if (process.env.FAKE_CLAUDE_STDIN) writeFileSync(process.env.FAKE_CLAUDE_STDIN, input);
+		receiveUser(); return;
+	}
+	if (message.request.subtype === "initialize") {
+		if (process.env.FAKE_CLAUDE_INIT === "ignore") return;
+		await writeLine(JSON.stringify({ type: "control_response", response: {
+			request_id: message.request_id, subtype: process.env.FAKE_CLAUDE_INIT === "error" ? "error" : "success",
+			response: {}, error: "unsupported initialize",
+		} }));
+	} else if (message.request.subtype === "get_context_usage") {
+		await writeLine(JSON.stringify({ type: "control_response", response: {
+			request_id: message.request_id, subtype: "success",
+			response: { maxTokens: process.env.FAKE_CLAUDE_WINDOW ? JSON.parse(process.env.FAKE_CLAUDE_WINDOW) : null },
+		} }));
+	}
+});
+await userReceived;
 
 let bridge = null;
 const results = [];

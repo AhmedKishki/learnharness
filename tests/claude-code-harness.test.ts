@@ -23,7 +23,7 @@ import { CLAUDE_CODE_MODELS } from "../src/agent/claude-code/provider.ts";
 import { createClaudeCodeStreamFunction, type RunClaude } from "../src/agent/claude-code/stream.ts";
 import type { PiEngine } from "../src/agent/models.ts";
 import { createTeacherAgent } from "../src/agent/teacher-agent.ts";
-import { danglingQuestionOf } from "../src/core/native-messages.ts";
+import { cliContextWindowOf, danglingQuestionOf } from "../src/core/native-messages.ts";
 import { handleChatRequest } from "../src/server/chat-handler.ts";
 import { isTurnRunning } from "../src/server/turn-liveness.ts";
 import { runningTurn } from "../src/server/turn-runs.ts";
@@ -157,6 +157,8 @@ async function waitForExit(child: ChildProcessWithoutNullStreams): Promise<void>
 
 test("a question answered before the idle timeout continues the waiting CLI process with the answer", async (t) => {
 	const fakeRun = createFakeRun(t, [toAskScenario()]);
+	const run = fakeRun.runClaude;
+	fakeRun.runClaude = (args, options) => run(args, { ...options, env: { ...options.env, FAKE_CLAUDE_WINDOW: "200000" } });
 	const agentFactory = createAgentFactory(fakeRun);
 	const chatId = createClaudeCodeChat(t);
 
@@ -170,6 +172,8 @@ test("a question answered before the idle timeout continues the waiting CLI proc
 	await runChatTurn(chatId, toAnswerInput(), agentFactory);
 
 	assert.equal(fakeRun.children.length, 1);
+	assert.deepEqual(cliContextWindowOf(chatStore.getChat(chatId)!.messages), { model: "claude-code:sonnet", tokens: 200000 });
+	assert.deepEqual(cliContextWindowOf(JSON.parse(readFileSync(join(PATHS.chats, `${chatId}.json`), "utf8")).messages), { model: "claude-code:sonnet", tokens: 200000 });
 	assert.ok(getLastAssistantText(chatId).includes(ANSWER_TEXT), getLastAssistantText(chatId));
 	await waitForExit(waiting);
 });

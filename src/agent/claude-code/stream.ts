@@ -24,9 +24,11 @@ import type { AnthropicEffort } from "@earendil-works/pi-ai/api/anthropic-messag
 import { parseStreamingJson, parseToolCallArguments } from "@earendil-works/pi-ai/utils/json-parse";
 
 import { externalCliEnv } from "../../core/auth-env.ts";
+import type { LhMessage } from "../../core/native-messages.ts";
 import { ClaudeLaunchError, createClaudeLauncher } from "./launch.ts";
 import { parseCliLine, type CliBlock, type CliEvent, type CliUsage } from "./cli-events.ts";
 import { ClaudeCodeError } from "./constants.ts";
+import { ContextWindowProbe } from "./context-window.ts";
 import { addLiveProcess, getLiveProcess, removeLiveProcess, type LiveProcess } from "./live-processes.ts";
 import { configurationForReuse, conversationForReuse } from "./reuse-context.ts";
 import { BRIDGE_SERVER_NAME, createToolBridge, toolNameFromMcp, type PendingToolCall, type ToolBridge } from "./tool-bridge.ts";
@@ -137,7 +139,7 @@ function getAssistantErrorMessage(error: string, text: string): string {
 }
 
 class ClaudeTurn {
-	private readonly output: AssistantMessage;
+	private readonly output: AssistantMessage & Pick<LhMessage, "cliContextWindow">;
 	private readonly contentIndexes = new Map<number, number>();
 	private readonly partialJson = new Map<number, string>();
 	private readonly toolBlocks = new Map<number, ToolCall>();
@@ -232,6 +234,10 @@ class ClaudeTurn {
 	getIntents(): ToolCall[] { return this.intents; }
 
 	getMessage(): AssistantMessage { return this.output; }
+
+	setContextWindow(tokens: number | undefined): void {
+		if (!this.finished && tokens !== undefined) this.output.cliContextWindow = tokens;
+	}
 
 	admit(calls: ToolCall[]): void {
 		this.start();
@@ -398,6 +404,8 @@ class ClaudeProcess implements LiveProcess {
 	private admitted: PendingToolCall[] = [];
 	private readonly cancelledIds = new Set<string>();
 	private pendingError: string | undefined;
+	private contextWindow: number | undefined;
+	private contextProbe: ContextWindowProbe | undefined;
 
 	constructor(
 		private readonly child: ChildProcessWithoutNullStreams,
@@ -420,12 +428,17 @@ class ClaudeProcess implements LiveProcess {
 		this.child.stderr.setEncoding("utf8");
 		this.child.stderr.on("data", (chunk: string) => { this.stderr = (this.stderr + chunk).slice(-65_536); });
 		this.child.stdin.on("error", (error) => console.error("claude CLI stdin closed early:", error));
-		this.child.stdin.end(`${stdinLine}\n`);
+		this.contextProbe = new ContextWindowProbe(
+			(line) => this.child.stdin.write(`${line}\n`),
+			() => { if (!this.stopping) this.child.stdin.write(`${stdinLine}\n`); },
+			(tokens) => { this.contextWindow = tokens; this.turn.setContextWindow(tokens); },
+		);
 		createInterface({ input: this.child.stdout }).on("line", (line) => {
 			try { this.handleLine(line); }
 			catch { this.fail("claude CLI emitted malformed stream output"); }
 		});
 		this.setSignal(signal);
+		if (!this.stopping) this.contextProbe.start();
 	}
 
 	canContinue(owner: symbol, sessionId: string | undefined, configuration: unknown, messages: Message[], results: ToolResultMessage[]): boolean {
@@ -445,6 +458,7 @@ class ClaudeProcess implements LiveProcess {
 		this.admitted = [];
 		this.conversation = structuredClone(conversationForReuse(messages));
 		this.turn = turn;
+		this.turn.setContextWindow(this.contextWindow);
 		this.sourceComplete = this.sourceCalls.length > 0;
 		this.setSignal(signal);
 		if (this.stopping) return;
@@ -459,6 +473,7 @@ class ClaudeProcess implements LiveProcess {
 		removeLiveProcess(this);
 		if (this.stopping || this.closed) return;
 		this.stopping = true;
+		this.contextProbe?.close();
 		this.child.kill();
 		this.killTimer = setTimeout(() => this.child.kill("SIGKILL"), 1000);
 		this.killTimer.unref();
@@ -526,7 +541,8 @@ class ClaudeProcess implements LiveProcess {
 	}
 
 	private handleLine(line: string): void {
-		if (this.stopping) return;
+		if (this.stopping || !line.trim()) return;
+		if (this.contextProbe?.handle(JSON.parse(line))) return;
 		const event = parseCliLine(line);
 		if (!event) return;
 		if (event.type === "toolResults") {
@@ -545,6 +561,7 @@ class ClaudeProcess implements LiveProcess {
 			this.fail("claude CLI moved on without admitting its harness tool calls");
 			return;
 		}
+		if (event.type === "messageStart") this.contextProbe?.refresh();
 		this.turn.handle(event);
 		if (this.turn.finished) { this.kill(); return; }
 		if (event.type === "messageStop" && this.turn.waitingForAdmission) {
@@ -562,6 +579,7 @@ class ClaudeProcess implements LiveProcess {
 	private handleClose(message: string): void {
 		if (this.closed) return;
 		this.closed = true;
+		this.contextProbe?.close();
 		clearTimeout(this.killTimer);
 		removeLiveProcess(this);
 		if (this.pendingError) addLiveProcess(this);

@@ -23,8 +23,9 @@ export interface ModelCatalogEntry {
 	supportedLevels: ThinkingLevel[];
 	/** Null when LearnHarness cannot estimate prices for this connection. */
 	cost: { input: number; output: number; cacheRead: number; cacheWrite: number } | null;
-	contextWindow: number;
-	maxTokens: number;
+	/** Null for native CLI aliases whose effective limits are session-specific. */
+	contextWindow: number | null;
+	maxTokens: number | null;
 }
 
 /** The conversation agents' resolved default (BYOK, owner 2026-09-22): the

@@ -620,13 +620,18 @@ test("does not inject credentials reflected only from LearnHarness's key store",
 	assert.equal(process.env[name], "lh-only-key", "other LearnHarness providers keep their env reflection");
 });
 
-test("writes the transcript as one stream-json user line on stdin", async (t) => {
+test("writes one user prompt after local-only control initialization and summary request", async (t) => {
 	const stdinFile = join(mkdtempSync(join(tmpdir(), "claude-code-stdin-")), "stdin.jsonl");
 	t.after(() => rmSync(dirname(stdinFile), { recursive: true, force: true }));
 
 	await runScenario(t, readFixtureLines("text.jsonl"), undefined, { FAKE_CLAUDE_STDIN: stdinFile });
 
-	assert.equal(readFileSync(stdinFile, "utf8"), `${toStreamJsonLine([{ type: "text", text: "hi" }])}\n`);
+	const lines = readFileSync(stdinFile, "utf8").trim().split("\n");
+	assert(lines.length >= 3);
+	assert.deepEqual(JSON.parse(lines[0]!).request, { subtype: "initialize" });
+	assert.deepEqual(JSON.parse(lines[1]!).request, { subtype: "get_context_usage", detail: "summary" });
+	assert.equal(lines[2], toStreamJsonLine([{ type: "text", text: "hi" }]));
+	assert(lines.slice(3).every((line) => JSON.parse(line).request.detail === "summary"));
 });
 
 test("parseCliLine ignores non-JSON, system, rate-limit and successful result lines", () => {
@@ -1000,6 +1005,28 @@ test("a caller without a session ID uses fresh replay and retains no held proces
 	assert.equal(fresh.calls.length, 1);
 	assert.match(readFileSync(stdinFile, "utf8"), /the preserved answer/);
 	await assertCleanedUp(getOnlyCall(fresh.calls));
+});
+
+test("CLI window metadata stays on its own process and survives a held-tool continuation", async (t) => {
+	const read: ToolUse = { id: "toolu_window", name: "read", arguments: { path: "one" } };
+	const one = createFakeRun(t, [...toToolUseMessage([read]), callTool(read), REPLY], { FAKE_CLAUDE_WINDOW: "200000" });
+	const two = createFakeRun(t, [...toToolUseMessage([read]), callTool(read), REPLY], { FAKE_CLAUDE_WINDOW: "750000" });
+	let spawns = 0;
+	const stream = createClaudeCodeStreamFunction((args, opts) => (++spawns === 1 ? one : two).runClaude(args, opts));
+	const window = (m: AssistantMessage) => (m as AssistantMessage & { cliContextWindow?: number }).cliContextWindow;
+	const a = await runTurn(stream, [HI], { sessionId: "context-one" });
+	const b = await runTurn(stream, [HI], { sessionId: "context-two" });
+	assert.equal(window(a), 200000); assert.equal(window(b), 750000);
+	const ra = await runTurn(stream, [HI, a, toToolResult(read, "a")], { sessionId: "context-one" });
+	const rb = await runTurn(stream, [HI, b, toToolResult(read, "b")], { sessionId: "context-two" });
+	assert.equal(window(ra), 200000); assert.equal(window(rb), 750000); assert.equal(spawns, 2);
+});
+
+for (const extraEnv of [{ FAKE_CLAUDE_INIT: "error" }, { FAKE_CLAUDE_WINDOW: "-1" }, {}] as Record<string, string>[]) test(`missing/unsupported CLI window never prevents a normal response: ${JSON.stringify(extraEnv)}`, async (t) => {
+	const { events } = await runScenario(t, readFixtureLines("text.jsonl"), undefined, extraEnv);
+	const result = getLastEvent(events);
+	assert.equal(result.type, "done");
+	assert(!("cliContextWindow" in (result.type === "done" ? result.message : {})));
 });
 
 for (const sharedIdentity of [false, true]) test(`two concurrent stream owners keep separate processes${sharedIdentity ? " even with identical call IDs and arguments" : ""}`, async (t) => {

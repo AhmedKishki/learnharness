@@ -66,7 +66,8 @@ describe("the model catalog projection", () => {
 			assert.ok(Array.isArray(m.supportedLevels));
 			if (m.provider === "claude-code") assert.equal(m.cost, null);
 			else assert.ok(m.cost && typeof m.cost.input === "number" && typeof m.cost.output === "number");
-			assert.ok(m.contextWindow > 0);
+			if (m.provider === "claude-code") assert.equal(m.contextWindow, null);
+			else assert.ok(m.contextWindow !== null && m.contextWindow > 0);
 		}
 		const glm = models.find((m) => m.id === "z-ai/glm-5.3-flash");
 		assert.ok(glm, "glm-5.3-flash in catalog");
@@ -384,9 +385,9 @@ describe("the claude-code provider (native CLI authentication, no LearnHarness k
 		});
 	});
 
-	it("catalogContextLimits() has claude-code:opus when the CLI is installed", () => {
+	it("catalogContextLimits() never advertises placeholder CLI limits, even when installed", () => {
 		withClaudeInstalled(true, () => {
-			assert.ok((catalogContextLimits().get("claude-code:opus") ?? 0) > 0);
+			assert.equal(catalogContextLimits().has("claude-code:opus"), false);
 		});
 	});
 
