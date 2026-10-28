@@ -3,7 +3,8 @@ import { after, describe, it } from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createModels, normalizeContext } from "@earendil-works/pi-ai";
+import { createModels, normalizeContext, type SimpleStreamOptions } from "@earendil-works/pi-ai";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { parseCustomProviders, resolveCustomValue } from "../src/core/custom-providers.ts";
 import { createCustomProvider, customProviderApis } from "../src/agent/custom-providers.ts";
 
@@ -186,6 +187,46 @@ describe("custom providers in the existing application wiring", () => {
 		assert.equal("store" in requests[0]!.body, false);
 		assert.equal(requests[0]!.body.max_tokens, 1024);
 		assert.equal(requests[1]!.body.max_tokens, 512, "current Pi model metadata, not the stale engine model, controls the request");
+	});
+	const thinking = (...levels: ThinkingLevel[]) => ({
+		reasoning: true,
+		// Pi treats omitted levels through high as supported; mark every
+		// unselected level explicitly unsupported for these narrow fixtures.
+		thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: null, xhigh: null, max: null, ...Object.fromEntries(levels.map((level) => [level, level])) },
+	});
+	const thinkingCases: { name: string; preference?: ThinkingLevel; initial: object; updated: object; before: ThinkingLevel; after: ThinkingLevel }[] = [
+		{ name: "recovers saved max after high-only metadata expands", preference: "max", initial: thinking("high"), updated: thinking("high", "max"), before: "high", after: "max" },
+		{ name: "recovers saved max after reasoning-off metadata expands", preference: "max", initial: { reasoning: false }, updated: thinking("high", "max"), before: "off", after: "max" },
+		{ name: "selects the existing medium-first default after reasoning becomes supported", initial: { reasoning: false }, updated: thinking("low", "medium", "high"), before: "off", after: "medium" },
+		{ name: "reselects the existing low-before-high default against updated metadata", initial: thinking("high"), updated: thinking("low", "high"), before: "high", after: "low" },
+		{ name: "clamps saved max when supported thinking contracts", preference: "max", initial: thinking("high", "max"), updated: thinking("high"), before: "max", after: "high" },
+		{ name: "omits reasoning when the model loses thinking support", preference: "max", initial: thinking("high", "max"), updated: { reasoning: false }, before: "max", after: "off" },
+	];
+	for (const scenario of thinkingCases) it(scenario.name, async () => {
+		const definition = (metadata: object) => config({ compat: { supportsReasoningEffort: true, thinkingFormat: "openai" } }, [model("chat", metadata)]);
+		save(definition(scenario.initial));
+		const engine = piEngineForSpec({ provider: "gateway", id: "chat", thinkingLevel: scenario.preference });
+		assert.equal(engine.level, scenario.before);
+		const requests: Record<string, unknown>[] = [];
+		const original = globalThis.fetch;
+		globalThis.fetch = async (input, init) => {
+			const request = input instanceof Request ? input : new Request(input, init);
+			requests.push(await request.json() as Record<string, unknown>);
+			return sseText();
+		};
+		try {
+			const context = normalizeContext({ messages: [{ role: "user", content: "hello", timestamp: 1 }] });
+			// A long-lived agent still forwards its initial thinking setting.
+			const options: SimpleStreamOptions = { reasoning: engine.level === "off" ? undefined : engine.level };
+			assert.equal((await engine.streamFn(engine.model, context, options).result()).stopReason, "stop");
+			save(definition(scenario.updated));
+			assert.equal((await engine.streamFn(engine.model, context, options).result()).stopReason, "stop");
+		} finally { globalThis.fetch = original; }
+		assert.equal(requests.length, 2);
+		for (const [index, level] of [scenario.before, scenario.after].entries()) {
+			assert.equal(requests[index]!.reasoning_effort, level === "off" ? undefined : level);
+			if (level === "off") assert.equal("reasoning_effort" in requests[index]!, false);
+		}
 	});
 	it("disables custom routes on malformed edits without removing built-ins or saved choices", () => {
 		fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ version: 1, models: { strong: { model: { provider: "gateway", id: "chat" }, thinkingLevel: "high" } } }));

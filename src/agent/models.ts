@@ -43,8 +43,8 @@ export const APP_IDENTITY = Object.freeze({
 export interface PiEngine {
 	model: Model<Api>;
 	streamFn: StreamFunction;
-	/** The resolved (config-or-settings, CLAMPED) thinking level —
-	 *  observability + tests; the streamFn pins it anyway. */
+	/** The initially resolved (config-or-settings, CLAMPED) thinking level.
+	 *  Custom streams re-resolve the original preference per operation. */
 	level?: ThinkingLevel;
 }
 
@@ -128,8 +128,9 @@ export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (
 	// UNSET level → the baked default order (first entry the model
 	// supports); SET level → pi's native nearest-clamp (model swaps keep
 	// the user's intent and adapt honestly).
-	const level = spec.thinkingLevel
-		? clampThinkingLevel(model, spec.thinkingLevel)
+	const thinkingPreference = spec.thinkingLevel;
+	const level = thinkingPreference
+		? clampThinkingLevel(model, thinkingPreference)
 		: defaultThinkingLevel(model);
 	// A lesson's agent loop can stay alive through many tool calls. Remember
 	// only that this is a custom route, never its configuration for that run.
@@ -137,21 +138,24 @@ export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (
 	return {
 		model,
 		level,
-		// bound streamSimple: the agent loop forwards state.thinkingLevel as
-		// `reasoning` (undefined = off on pi-ai's scale); the clamp above keeps
-		// the pin honest even when config or settings drift off the map.
+		// The agent loop forwards state.thinkingLevel as `reasoning` (undefined
+		// = off on pi-ai's scale). Built-ins keep the factory clamp; custom
+		// requests re-resolve thinking against their current metadata below.
 		streamFn: (requestModel, context, options) => {
-			const requestOptions = { ...options, reasoning: level === "off" ? undefined : level };
 			if (custom) {
 				// Revalidate before EVERY upstream model operation, including later
-				// tool-loop steps. Pi resolves auth and clamps the requested thinking
-				// against the current native model. Its in-flight operation retains
-				// its own setup; a subsequent operation uses the reloaded provider.
+				// tool-loop steps. Resolve thinking from the ORIGINAL preference (or
+				// existing default order), not a previous metadata snapshot's clamp.
+				// Pi retains the setup of an operation already in flight.
 				const current = piModels();
 				const currentModel = current.getModel(spec.provider, spec.id);
 				if (!currentModel) return lazyStream(requestModel, async () => { throw new Error("The selected custom model is unavailable."); });
-				return current.streamSimple(currentModel, context, requestOptions);
+				const currentLevel = thinkingPreference
+					? clampThinkingLevel(currentModel, thinkingPreference)
+					: defaultThinkingLevel(currentModel);
+				return current.streamSimple(currentModel, context, { ...options, reasoning: currentLevel === "off" ? undefined : currentLevel });
 			}
+			const requestOptions = { ...options, reasoning: level === "off" ? undefined : level };
 			const purpose = typeof background === "function" ? background : () => background;
 			const stream = spec.provider === "chatgpt" ? chatGPTStream(purpose, lifecycle) : nativeId ? nativeSubscriptionStream(models.getProvider(nativeId)!, purpose, lifecycle) : models.streamSimple.bind(models);
 			return stream(requestModel, context, requestOptions);
