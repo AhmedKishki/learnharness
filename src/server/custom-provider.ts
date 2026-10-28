@@ -101,8 +101,12 @@ export function syncCustomProvider(cp: CustomProviderSettings | undefined): void
 	);
 }
 
-/** Outcome of a model-discovery probe. */
-export type DiscoverResult = { ok: true; models: CustomModel[] } | { ok: false; error: string };
+/** Outcome of a model-discovery probe. `status` is the endpoint's HTTP status
+ *  when it answered at all, so callers can tell a rejected key from a missing
+ *  model list. */
+export type DiscoverResult =
+	| { ok: true; models: CustomModel[] }
+	| { ok: false; error: string; status?: number };
 
 /** Probe GET {baseUrl}/models for model ids. Scheme validated (http/https
  *  only); keyless endpoints answer without a bearer. Non-2xx or unparseable
@@ -118,7 +122,7 @@ export async function discoverModels(baseUrl: string, apiKey?: string): Promise<
 			headers: key ? { authorization: `Bearer ${key}` } : {},
 			signal: controller.signal,
 		});
-		if (!res.ok) return { ok: false, error: `Endpoint returned ${res.status} ${res.statusText}` };
+		if (!res.ok) return { ok: false, error: `Endpoint returned ${res.status} ${res.statusText}`, status: res.status };
 		const body = (await res.json().catch(() => null)) as unknown;
 		const list = extractModels(body);
 		if (list === null) return { ok: false, error: "Endpoint response was not a model list" };
@@ -131,6 +135,9 @@ export async function discoverModels(baseUrl: string, apiKey?: string): Promise<
 	}
 }
 
+/** The connect's model list: what the endpoint advertises, plus every typed id
+ *  it does not advertise (at default limits, so the pins can correct them).
+ *  Discovered metadata always wins over a typed id of the same name. */
 export function mergeManualModels(discovered: readonly CustomModel[], manualIds: readonly string[]): CustomModel[] {
 	const byId = new Map(discovered.map((m) => [m.id, m]));
 	for (const id of manualIds) if (!byId.has(id)) byId.set(id, { id });
