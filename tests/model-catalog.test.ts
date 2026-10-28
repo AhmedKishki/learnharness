@@ -64,7 +64,8 @@ describe("the model catalog projection", () => {
 			assert.equal(typeof m.id, "string");
 			assert.equal(typeof m.name, "string");
 			assert.ok(Array.isArray(m.supportedLevels));
-			assert.ok(typeof m.cost.input === "number" && typeof m.cost.output === "number");
+			if (m.provider === "claude-code") assert.equal(m.cost, null);
+			else assert.ok(m.cost && typeof m.cost.input === "number" && typeof m.cost.output === "number");
 			assert.ok(m.contextWindow > 0);
 		}
 		const glm = models.find((m) => m.id === "z-ai/glm-5.3-flash");
@@ -126,6 +127,7 @@ describe("the model catalog projection", () => {
 		assert.equal(dto.id, raw.id);
 		assert.equal(dto.name, raw.name);
 		assert.deepEqual(dto.supportedLevels, getSupportedThinkingLevels(raw));
+		assert.ok(dto.cost);
 		assert.equal(dto.cost.input, raw.cost.input);
 		assert.equal(dto.contextWindow, raw.contextWindow);
 	});

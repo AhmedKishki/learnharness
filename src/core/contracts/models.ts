@@ -21,7 +21,8 @@ export interface ModelCatalogEntry {
 	 * thinkingLevelMap — e.g. GLM-5.3-flash: low|high|max). The thinking
 	 * picker lists exactly these; anything else is a lie. */
 	supportedLevels: ThinkingLevel[];
-	cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+	/** Null when LearnHarness cannot estimate prices for this connection. */
+	cost: { input: number; output: number; cacheRead: number; cacheWrite: number } | null;
 	contextWindow: number;
 	maxTokens: number;
 }

@@ -1,3 +1,5 @@
+export const CLAUDE_CODE_PROVIDER = "claude-code";
+
 /** Installation/version only. Never an authentication, quota, or billing verdict. */
 export interface ClaudeCodeStatus {
 	state: "not-found" | "meets-minimum" | "update-required" | "version-unchecked";

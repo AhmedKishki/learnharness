@@ -7,8 +7,8 @@ const SHARED_MODEL_FIELDS = {
 	provider: CLAUDE_CODE_PROVIDER,
 	baseUrl: "",
 	input: ["text", "image"],
-	// Placeholder rates, not a billing guarantee: the CLI's own auth/routing
-	// determines charges. Cost presentation remains a separate product decision.
+	// Pi-required placeholders, not prices: the CLI's own auth/routing
+	// determines charges. Server pricing and the client catalog report unpriced.
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	reasoning: true,
 	// The CLI has no thinking-off switch; effort low is the floor.
