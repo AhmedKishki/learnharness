@@ -34,6 +34,10 @@ second pillar of input).
   no client request to abort). Every element/document-level Esc handler
   that acts calls `e.stopPropagation()` so the window chain never
   double-fires. The session search claims Esc to blur back to normal.
+- **Non-Latin layouts**: a modified letter binds by its physical key
+  when the layout's `key` is not ASCII (Ctrl+K on a Russian layout reports
+  "л" — `eventBinding` reads `code` KeyK instead), so every shortcut works
+  on any layout. Latin layouts keep following `key` (AZERTY, Dvorak).
 - **Focus ring**: browser Tab-focus is gone, so `:focus-visible` stays
   unstyled (an earlier experimental outline was live-rejected — inputs
   showed a red ring on plain click-focus).
