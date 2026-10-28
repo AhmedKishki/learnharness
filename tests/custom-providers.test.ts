@@ -7,6 +7,7 @@ import { createModels, normalizeContext, type SimpleStreamOptions } from "@earen
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { parseCustomProviders, resolveCustomValue } from "../src/core/custom-providers.ts";
 import { createCustomProvider, customProviderApis } from "../src/agent/custom-providers.ts";
+import { CLAUDE_CODE_PROVIDER } from "../src/core/contracts/claude-code.ts";
 
 const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 function model(id = "chat", extra = {}) {
@@ -27,7 +28,7 @@ const { modelCatalog, validateModelsSettings, clampModelsLevels, catalogContextL
 const { piModels, piEngineForSpec } = await import("../src/agent/models.ts");
 const { providerKeyPresent, keyValue } = await import("../src/server/keys.ts");
 const { authStore } = await import("../src/store/auth.ts");
-const { CustomProviderSource, installCustomProviderSource } = await import("../src/server/custom-providers.ts");
+const { CustomProviderSource, customProviderConfigured, installCustomProviderSource } = await import("../src/server/custom-providers.ts");
 const { callCost } = await import("../src/server/pricing.ts");
 after(() => fs.rmSync(temp, { recursive: true, force: true }));
 
@@ -270,15 +271,51 @@ describe("custom providers in the existing application wiring", () => {
 		assert.equal(previous.apiKey, "one");
 		assert.equal(previous.headers!["x-shared"], "model-first");
 	});
-	it("rejects built-in and subscription-route collisions without replacing their providers", () => {
-		for (const id of ["openai", "github-copilot", "chatgpt", "github-copilot-subscription", "xai-subscription"]) {
+	it("rejects built-in, subscription and native CLI collisions without replacing their providers", () => {
+		for (const id of ["openai", "github-copilot", "chatgpt", "github-copilot-subscription", "xai-subscription", CLAUDE_CODE_PROVIDER]) {
 			const existing = piModels().getProvider("openai")!;
-			const models = createModels(); models.setProvider(existing);
+			const nativeCli = piModels().getProvider(CLAUDE_CODE_PROVIDER)!;
+			const models = createModels(); models.setProvider(existing); models.setProvider(nativeCli);
 			const source = new CustomProviderSource(() => ({ text: JSON.stringify({ providers: { [id]: config().providers.gateway } }) }), () => undefined);
 			source.sync(models);
 			assert.ok(source.getError());
 			assert.equal(models.getProvider("openai"), existing);
-			assert.equal(models.getProviders().length, 1);
+			assert.equal(models.getProvider(CLAUDE_CODE_PROVIDER), nativeCli);
+			assert.equal(models.getProviders().length, 2);
+		}
+	});
+	it("cannot bypass CLI opt-in or replace/remove the native provider across custom configuration reloads", (t) => {
+		const nativeCli = piModels().getProvider(CLAUDE_CODE_PROVIDER)!;
+		assert.ok(nativeCli);
+		const aliases = piModels().getModels(CLAUDE_CODE_PROVIDER);
+		const savedConfig = fs.existsSync(CUSTOM_MODELS_FILE) ? fs.readFileSync(CUSTOM_MODELS_FILE, "utf8") : undefined;
+		const savedSettings = fs.existsSync(SETTINGS_FILE) ? fs.readFileSync(SETTINGS_FILE, "utf8") : undefined;
+		t.after(() => {
+			if (savedConfig === undefined) fs.rmSync(CUSTOM_MODELS_FILE, { force: true }); else fs.writeFileSync(CUSTOM_MODELS_FILE, savedConfig);
+			if (savedSettings === undefined) fs.rmSync(SETTINGS_FILE, { force: true }); else fs.writeFileSync(SETTINGS_FILE, savedSettings);
+			piModels();
+		});
+		fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ version: 1, claudeCode: { enabled: false } }));
+		const collision = { providers: { [CLAUDE_CODE_PROVIDER]: config().providers.gateway } };
+		for (const [value, error] of [
+			[collision, true], // Initial collision must never enter registered/ready.
+			[config(), false], // A normal custom route still works.
+			[collision, true], // Invalid reload retires custom routes, not native ones.
+			["malformed configuration", true],
+			[undefined, false], // Removing the file must not delete the native CLI.
+			[config(), false],
+			[undefined, false],
+		] as const) {
+			if (value === undefined) fs.rmSync(CUSTOM_MODELS_FILE, { force: true });
+			else if (typeof value === "string") fs.writeFileSync(CUSTOM_MODELS_FILE, value);
+			else save(value);
+			const catalog = modelCatalog();
+			assert.equal(Boolean(catalog.customProvidersError), error);
+			assert.equal(customProviderConfigured(CLAUDE_CODE_PROVIDER), undefined);
+			assert.equal(providerKeyPresent(CLAUDE_CODE_PROVIDER), false, "custom auth must never bypass disabled CLI admission");
+			assert.equal(piModels().getProvider(CLAUDE_CODE_PROVIDER), nativeCli, "preserve the native provider identity, not a reconstructed substitute");
+			assert.deepEqual(piModels().getModels(CLAUDE_CODE_PROVIDER), aliases);
+			assert.equal(catalog.models.some((m) => m.provider === CLAUDE_CODE_PROVIDER), false);
 		}
 	});
 	it("fails closed across partial publication and recovers without leaking internal errors", () => {

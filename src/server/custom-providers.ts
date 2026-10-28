@@ -6,9 +6,10 @@ import { createCustomProvider, customProviderApis, customProviderAuth } from "..
 import { configureProviderSource } from "../agent/models.ts";
 import { parseCustomProviders, resolveCustomValue, CustomProviderConfigError, type CustomProviderConfig } from "../core/custom-providers.ts";
 import { NATIVE_SUBSCRIPTIONS } from "../core/contracts/subscriptions.ts";
+import { CLAUDE_CODE_PROVIDER } from "../core/contracts/claude-code.ts";
 import { readCustomProvidersFile } from "../store/custom-providers.ts";
 
-const reserved = new Set([...builtinProviders().map((p) => p.id), "chatgpt", ...NATIVE_SUBSCRIPTIONS.map((p) => p.logicalId)]);
+const reserved = new Set([...builtinProviders().map((p) => p.id), "chatgpt", CLAUDE_CODE_PROVIDER, ...NATIVE_SUBSCRIPTIONS.map((p) => p.logicalId)]);
 
 /** Instance-local so every Next server module graph registers into its own Pi
  * collection. No process-global registry or personal Pi config is consulted. */
