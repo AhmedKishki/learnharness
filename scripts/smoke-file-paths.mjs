@@ -356,7 +356,7 @@ try {
 		await blur(page); await syntheticDrop(page, ["/synthetic/collapsed-practice.pdf"]);
 		// Practice keeps the owning hook/state mounted, but hides its field
 		// by returning the bar. Inspect the controlled text after expansion.
-		await page.waitForFunction(() => document.querySelector('[role="status"]')?.textContent.includes("File paths attached"));
+		assert.equal(await page.$('[role="status"]'), null, "successful attachment has no confirmation bubble");
 		await page.locator('[data-testid="practice-dock-bar"]').click();
 		await page.waitForSelector(practice, { visible: true });
 		await expectValue(page, "`/synthetic/practice.pdf` `/synthetic/collapsed-practice.pdf`", practice);
@@ -405,6 +405,7 @@ try {
 	await expectValue(desktopPage, `read ${expectedQuoted} this`);
 	assert.equal(await desktopPage.$eval('[data-file-path-input] [role="img"]', chip => chip.title), fixturePath);
 	assert.equal(posts.length, beforeDesktopDrop, "actual OS-backed desktop drop must stage only");
+	assert.equal(await desktopPage.$('[role="status"]'), null, "successful desktop attachment has no confirmation bubble");
 	assert.ok(fs.existsSync(fixturePath));
 	assert.deepEqual(fs.readdirSync(path.join(home, "data")).filter(name => /upload|attachment/i.test(name)), []);
 	checks.push("Actual Electron production preload: Puppeteer-selected OS-backed File resolves exact Unicode/backtick full path; virtual File returns empty; real DataTransfer drop inserts at caret without submit or file reads");

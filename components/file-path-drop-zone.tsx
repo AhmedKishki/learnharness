@@ -85,7 +85,7 @@ export function FilePathDropZone({ children, className }: { children: React.Reac
 					setNotice("Open a chat to attach file paths.");
 					return;
 				}
-				setNotice(skipped ? "File paths attached. Some dropped items had no available file path." : "File paths attached.");
+				setNotice(skipped ? "Some dropped items had no available file path." : "");
 			}}
 		>
 			{children}

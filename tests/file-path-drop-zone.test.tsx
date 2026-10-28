@@ -124,7 +124,17 @@ test("desktop drop inserts quoted paths at the focused editor caret instead of t
 	assert.equal(f.doc.activeElement, f.editor);
 	assert.deepEqual(f.appends, [], "focused editor wins over the registered question field");
 	assert.deepEqual(f.resolved, files, "only Electron's full path, never File.name, enters the draft");
-	assert.match(f.status, /File paths attached/);
+	assert.equal(f.status, "", "successful file attachment is silent");
+	f.assertPathOnly();
+});
+
+test("a successful drop clears an earlier failure without replacing it with a confirmation bubble", async () => {
+	const f = await fixture();
+	await f.event("drop", f.transfer([f.file("virtual.pdf")]));
+	assert.match(f.status, /No local file paths were available/);
+	await f.event("drop", f.transfer([f.file("valid.pdf", "/existing/valid.pdf")]));
+	assert.deepEqual(f.appends, ["`/existing/valid.pdf`"]);
+	assert.equal(f.doc.querySelector('[role="status"]'), null);
 	f.assertPathOnly();
 });
 
