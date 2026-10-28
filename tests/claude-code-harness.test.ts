@@ -55,7 +55,7 @@ function toAskScenario(): string[] {
 		streamEvent({ type: "content_block_stop", index: 0 }),
 		streamEvent({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: {} }),
 		streamEvent({ type: "message_stop" }),
-		JSON.stringify({ fake: "call", name: "ask_user_question", arguments: ASK_INPUT }),
+		JSON.stringify({ fake: "call", id: ASK_ID, name: "ask_user_question", arguments: ASK_INPUT }),
 		JSON.stringify({ fake: "reply" }),
 	];
 }
@@ -166,6 +166,34 @@ test("a question answered before the idle timeout continues the waiting CLI proc
 	assert.equal(fakeRun.children.length, 1);
 	assert.ok(getLastAssistantText(chatId).includes(ANSWER_TEXT), getLastAssistantText(chatId));
 	await waitForExit(waiting);
+});
+
+test("a question pauses later calls from the same CLI response until the learner answers", async (t) => {
+	const secondId = "toolu_second_question";
+	const secondQuestion = "What do you want to learn next?";
+	const scenario = toAskScenario();
+	scenario.splice(4, 0,
+		streamEvent({ type: "content_block_start", index: 1, content_block: { type: "tool_use", id: secondId, name: "mcp__learnharness__ask_user_question", input: {} } }),
+		streamEvent({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: JSON.stringify({ question: secondQuestion }) } }),
+		streamEvent({ type: "content_block_stop", index: 1 }),
+	);
+	scenario.splice(scenario.length - 1, 0, JSON.stringify({ fake: "call", id: secondId, name: "ask_user_question", arguments: { question: secondQuestion } }));
+	const fakeRun = createFakeRun(t, [scenario]);
+	const factory = createAgentFactory(fakeRun);
+	const chatId = createClaudeCodeChat(t);
+	await runChatTurn(chatId, { type: "text", text: "teach me sockets" }, factory);
+	assert.equal(danglingQuestionOf(chatStore.getChat(chatId)?.messages ?? [])?.toolCallId, ASK_ID);
+	assert.equal(JSON.stringify(chatStore.getChat(chatId)?.messages).includes(secondId), false, "unadmitted second question must not be posed or persisted");
+	await runChatTurn(chatId, toAnswerInput(), factory);
+	assert.equal(danglingQuestionOf(chatStore.getChat(chatId)?.messages ?? [])?.toolCallId, secondId);
+	await runChatTurn(chatId, {
+		type: "answer", toolCallId: secondId,
+		answer: { kind: "ask", questionText: secondQuestion, dontKnow: false, answers: [], text: "HTTP next", answeredAt: new Date().toISOString() },
+	}, factory);
+	assert.equal(fakeRun.children.length, 1);
+	assert.ok(getLastAssistantText(chatId).includes(ANSWER_TEXT));
+	assert.ok(getLastAssistantText(chatId).includes("HTTP next"));
+	await waitForExit(fakeRun.children[0]!);
 });
 
 test("a question answered after the idle timeout starts a fresh CLI process that replays the question and answer", async (t) => {

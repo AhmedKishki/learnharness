@@ -4,11 +4,15 @@
  * line. Lines with a "fake" key are directives instead of output:
  *   {"fake":"hold"}                          stay alive until killed, like the CLI waiting on a held MCP call
  *   {"fake":"exit","code":1,"stderr":"..."}  write stderr and exit with that code
- *   {"fake":"call","name":"read","arguments":{...}}  call that tool on the MCP bridge and wait for its result
+ *   {"fake":"call","id":"toolu_...","name":"read","arguments":{...}}  call the MCP bridge and wait for its result
+ *   {"fake":"start-call",...}                start the same request without waiting for its result
+ *   {"fake":"wait-for-message"}              pause until the test releases the child over IPC
+ *   {"fake":"ignore-term"}                   ignore SIGTERM to exercise kill escalation
  *   {"fake":"reply"}                         stream one assistant message whose text is every result so far, joined by " | "
  * FAKE_CLAUDE_STDIN, when set, receives the stdin it read.
  */
 import { readFileSync, writeFileSync } from "node:fs";
+import { once } from "node:events";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -49,10 +53,15 @@ if (process.env.FAKE_CLAUDE_STDIN) writeFileSync(process.env.FAKE_CLAUDE_STDIN, 
 
 let bridge = null;
 const results = [];
+const pendingResults = [];
 const lines = readFileSync(process.env.FAKE_CLAUDE_SCENARIO, "utf8").split("\n").filter(Boolean);
 for (const line of lines) {
 	const directive = JSON.parse(line);
 
+	if (directive.fake === "wait-for-message") {
+		await once(process, "message");
+		continue;
+	}
 	if (directive.fake === "hold") {
 		setInterval(() => {}, HOLD_INTERVAL_MS);
 		break;
@@ -63,14 +72,28 @@ for (const line of lines) {
 		process.exit(directive.code);
 	}
 
-	if (directive.fake === "call") {
-		bridge ??= await connectBridge(mcpConfig);
-		const result = await bridge.callTool({ name: directive.name, arguments: directive.arguments });
-		results.push(result.content.map((block) => block.text).join(""));
+	if (directive.fake === "ignore-term") {
+		process.on("SIGTERM", () => {});
 		continue;
-
+	}
+	if (directive.fake === "call" || directive.fake === "start-call") {
+		bridge ??= await connectBridge(mcpConfig);
+		const request = bridge.callTool({
+			name: directive.name,
+			arguments: directive.arguments,
+			...(directive.id !== undefined ? { _meta: { "claudecode/toolUseId": directive.id } } : {}),
+		});
+		if (directive.fake === "start-call") {
+			pendingResults.push(request);
+			void request.catch(() => {});
+		} else {
+			const result = await request;
+			results.push(result.content.map((block) => block.text).join(""));
+		}
+		continue;
 	}
 	if (directive.fake === "reply") {
+		for (const result of await Promise.all(pendingResults.splice(0))) results.push(result.content.map((block) => block.text).join(""));
 		await writeReply(results.join(" | "));
 		continue;
 	}

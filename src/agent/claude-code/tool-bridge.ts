@@ -7,7 +7,9 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
 	CallToolRequestSchema,
+	ErrorCode,
 	ListToolsRequestSchema,
+	McpError,
 	type CallToolResult,
 	type Tool as McpTool,
 } from "@modelcontextprotocol/sdk/types.js";
@@ -18,7 +20,11 @@ const MCP_TOOL_PREFIX = `mcp__${BRIDGE_SERVER_NAME}__`;
 const LOOPBACK_HOST = "127.0.0.1";
 const TOKEN_BYTES = 32;
 
-export type PendingToolCall = { name: string; arguments: JsonObject };
+export type PendingToolCall = { id: string; name: string; arguments: JsonObject };
+
+type BridgeCallbacks = { onCall(): void; onError(error: Error): void };
+
+export const MCP_IDENTITY_ERROR = "claude CLI compatibility error: MCP calls must include a unique claudecode/toolUseId";
 
 export type ToolBridge = {
 	mcpConfig: string;
@@ -104,14 +110,28 @@ class ToolCallQueue {
 
 // Low-level Server on purpose: McpServer.registerTool only takes zod schemas, and pi tools carry
 // JSON Schema that must reach the CLI unchanged.
-function createMcpServer(tools: Tool[], queue: ToolCallQueue): Server {
+function createMcpServer(tools: Tool[], queue: ToolCallQueue, callbacks?: BridgeCallbacks): Server {
 	const server = new Server({ name: BRIDGE_SERVER_NAME, version: "1.0.0" }, { capabilities: { tools: {} } });
 
 	server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: tools.map(toMcpTool) }));
 
+	const seenIds = new Set<string>();
 	server.setRequestHandler(CallToolRequestSchema, (request) => {
-		const call = { name: request.params.name, arguments: (request.params.arguments ?? {}) as JsonObject };
-		return queue.add(call);
+		const id = request.params._meta?.["claudecode/toolUseId"];
+		if (typeof id !== "string" || !id.trim() || seenIds.has(id)) {
+			const error = new McpError(ErrorCode.InvalidParams, MCP_IDENTITY_ERROR);
+			callbacks?.onError(error);
+			throw error;
+		}
+		if (!tools.some((tool) => tool.name === request.params.name)) {
+			const error = new McpError(ErrorCode.InvalidParams, "claude CLI requested an undeclared harness tool");
+			callbacks?.onError(error);
+			throw error;
+		}
+		seenIds.add(id);
+		const result = queue.add({ id, name: request.params.name, arguments: (request.params.arguments ?? {}) as JsonObject });
+		callbacks?.onCall();
+		return result;
 	});
 
 	return server;
@@ -167,16 +187,22 @@ function toMcpConfig(port: number, authorization: string): string {
 	return JSON.stringify({ mcpServers: { [BRIDGE_SERVER_NAME]: server } });
 }
 
-export async function createToolBridge(tools: Tool[]): Promise<ToolBridge> {
+export async function createToolBridge(tools: Tool[], callbacks?: BridgeCallbacks): Promise<ToolBridge> {
 	const authorization = `Bearer ${randomBytes(TOKEN_BYTES).toString("hex")}`;
 
 	const queue = new ToolCallQueue();
-	const mcpServer = createMcpServer(tools, queue);
+	const mcpServer = createMcpServer(tools, queue, callbacks);
 	const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID() });
 	await mcpServer.connect(transport);
 
 	const httpServer = createHttpServer(transport, authorization);
-	const { port } = await listen(httpServer);
+	let port: number;
+	try {
+		({ port } = await listen(httpServer));
+	} catch (error) {
+		await mcpServer.close();
+		throw error;
+	}
 
 	return {
 		mcpConfig: toMcpConfig(port, authorization),

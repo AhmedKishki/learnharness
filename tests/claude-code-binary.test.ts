@@ -39,15 +39,15 @@ test("npm global bin follows npm_config_prefix when set", () => {
 	assert.equal(binary, "/opt/npm/bin/claude");
 });
 
-test("windows looks for claude.cmd and claude.exe", () => {
+test("windows finds native claude.exe and does not advertise unsupported .cmd-only installs", () => {
 	const winHome = "C:\\Users\\u";
 	const env = { PATH: "C:\\tools;C:\\bin", APPDATA: `${winHome}\\AppData\\Roaming` };
-	assert.equal(resolveWith(["C:\\bin\\claude.cmd"], env, "win32", winHome), "C:\\bin\\claude.cmd");
+	assert.equal(resolveWith(["C:\\bin\\claude.cmd"], env, "win32", winHome), null);
 	assert.equal(resolveWith(["C:\\bin\\claude.exe"], env, "win32", winHome), "C:\\bin\\claude.exe");
 	assert.equal(resolveWith([`${winHome}\\.local\\bin\\claude.exe`], env, "win32", winHome), `${winHome}\\.local\\bin\\claude.exe`);
 	assert.equal(
 		resolveWith([`${winHome}\\AppData\\Roaming\\npm\\claude.cmd`], env, "win32", winHome),
-		`${winHome}\\AppData\\Roaming\\npm\\claude.cmd`,
+		null,
 	);
 	assert.equal(resolveWith(["C:\\bin\\claude"], env, "win32", winHome), null);
 });

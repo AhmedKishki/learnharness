@@ -17,6 +17,7 @@ import {
 import { practiceTools, type PracticeToolContext } from "./tools/practice.ts";
 import { healToolRecord, withArgumentHeal } from "./tools/heal.ts";
 import { sendToUserTool } from "./tools/send-to-user.ts";
+import { CLAUDE_CODE_PROVIDER } from "./claude-code/constants.ts";
 import { quizInputObject, quizInputProblems } from "../core/question-core.ts";
 import { QUESTION_TOOLS, type EnabledTools } from "../core/pending.ts";
 import { toLlmMessages, nativeInputCause, PRACTICE_PROBLEM_TOOL } from "../core/native-messages.ts";
@@ -202,7 +203,7 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 			// transport. Explicit test registries remain caller-owned.
 			tools: [
 				...tools,
-				...(opts.tools === undefined && engine.model.id.toLowerCase().includes("claude")
+				...(opts.tools === undefined && (engine.model.provider === CLAUDE_CODE_PROVIDER || engine.model.id.toLowerCase().includes("claude"))
 					? [withArgumentHeal(sendToUserTool)]
 					: []),
 			],

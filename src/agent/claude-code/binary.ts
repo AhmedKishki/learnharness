@@ -21,7 +21,9 @@ function getWindowsSearchSpec(env: BinaryLookup["env"], homeDir: string): Search
 
 	return {
 		paths,
-		names: ["claude.exe", "claude.cmd"],
+		// Direct spawn deliberately uses no shell. A .cmd-only npm install
+		// is not runnable and must not count as an available provider.
+		names: ["claude.exe"],
 		knownDirs: [
 			paths.join(homeDir, ".local", "bin"),
 			paths.join(homeDir, ".claude", "local"),
