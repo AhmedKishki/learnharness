@@ -12,7 +12,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
@@ -63,6 +63,12 @@ function toAskScenario(): string[] {
 function createFakeRun(t: TestContext, scenarios: string[][]): FakeRun {
 	const dir = mkdtempSync(join(tmpdir(), "claude-code-harness-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	// Satisfy the real presence gate; this marker is NEVER executed. All work
+	// below goes through the injected Node fake-CLI seam, not an installed CLI.
+	writeFileSync(join(dir, process.platform === "win32" ? "claude.exe" : "claude"), "", { mode: 0o755 });
+	const savedPath = process.env.PATH;
+	process.env.PATH = `${dir}${delimiter}${savedPath ?? ""}`;
+	t.after(() => { if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath; });
 
 	const children: ChildProcessWithoutNullStreams[] = [];
 	const stdinFiles: string[] = [];

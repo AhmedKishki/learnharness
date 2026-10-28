@@ -354,7 +354,7 @@ function withClaudeInstalled(installed: boolean, fn: () => void): void {
 	}
 }
 
-describe("the claude-code provider (subscription CLI, no key)", () => {
+describe("the claude-code provider (native CLI authentication, no LearnHarness key)", () => {
 	it("modelCatalog() lists claude-code opus/sonnet/haiku when the CLI is installed", () => {
 		withClaudeInstalled(true, () => {
 			const ids = modelCatalog()
@@ -394,7 +394,8 @@ describe("the claude-code provider (subscription CLI, no key)", () => {
 		assert.equal(engine.model.id, "sonnet");
 	});
 
-	it('providerKeyPresent("claude-code") is true', () => {
-		assert.equal(providerKeyPresent("claude-code"), true);
+	it('providerKeyPresent("claude-code") follows executable presence, not a generic keyless default', () => {
+		withClaudeInstalled(true, () => assert.equal(providerKeyPresent("claude-code"), true));
+		withClaudeInstalled(false, () => assert.equal(providerKeyPresent("claude-code"), false));
 	});
 });

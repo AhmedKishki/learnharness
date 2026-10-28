@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,7 +24,7 @@ import type { AnthropicEffort } from "@earendil-works/pi-ai/api/anthropic-messag
 import { parseStreamingJson, parseToolCallArguments } from "@earendil-works/pi-ai/utils/json-parse";
 
 import { externalCliEnv } from "../../core/auth-env.ts";
-import { getClaudeBinary } from "./binary.ts";
+import { ClaudeLaunchError, createClaudeLauncher } from "./launch.ts";
 import { parseCliLine, type CliBlock, type CliEvent, type CliUsage } from "./cli-events.ts";
 import { ClaudeCodeError } from "./constants.ts";
 import { addLiveProcess, getLiveProcess, removeLiveProcess, type LiveProcess } from "./live-processes.ts";
@@ -32,9 +32,10 @@ import { configurationForReuse, conversationForReuse } from "./reuse-context.ts"
 import { BRIDGE_SERVER_NAME, createToolBridge, toolNameFromMcp, type PendingToolCall, type ToolBridge } from "./tool-bridge.ts";
 import { toClaudeInput, toStreamJsonLine } from "./transcript.ts";
 
-type RunClaudeOptions = { cwd: string; env: NodeJS.ProcessEnv };
+type RunClaudeOptions = { cwd: string; env: NodeJS.ProcessEnv; signal?: AbortSignal };
 
-export type RunClaude = (args: string[], options: RunClaudeOptions) => ChildProcessWithoutNullStreams | null;
+type ClaudeChild = ChildProcessWithoutNullStreams | null;
+export type RunClaude = (args: string[], options: RunClaudeOptions) => ClaudeChild | Promise<ClaudeChild>;
 
 // A held MCP call lasts until pi calls back with the tool result, which for a question tool is
 // whenever the learner answers; this must outlast the live-process idle timeout so the CLI never
@@ -637,7 +638,7 @@ async function startProcess(
 			mcpConfigFile: files.mcpConfigFile,
 			allowedTools: bridge.allowedTools,
 		});
-		child = runClaude(args, { cwd: files.cwd, env });
+		child = await runClaude(args, { cwd: files.cwd, env, signal: options?.signal });
 	} catch (error) {
 		await removeTurnResources(bridge, files);
 		throw error;
@@ -666,17 +667,11 @@ export function createClaudeCodeStreamFunction(runClaude: RunClaude): StreamFunc
 
 		startProcess(runClaude, turn, model, context, options, owner, configuration, env).catch((error: unknown) => {
 			console.error("claude CLI turn failed:", error);
-			turn.fail(START_FAILED_MESSAGE, "error");
+			turn.fail(options?.signal?.aborted ? ABORT_MESSAGE : error instanceof ClaudeLaunchError ? error.message : START_FAILED_MESSAGE, options?.signal?.aborted ? "aborted" : "error");
 		});
 
 		return stream;
 	};
 }
 
-function spawnClaude(args: string[], options: RunClaudeOptions): ChildProcessWithoutNullStreams | null {
-	const binary = getClaudeBinary();
-
-	return binary ? spawn(binary, args, { ...options, stdio: "pipe" }) : null;
-}
-
-export const streamClaudeCode = createClaudeCodeStreamFunction(spawnClaude);
+export const streamClaudeCode = createClaudeCodeStreamFunction(createClaudeLauncher());

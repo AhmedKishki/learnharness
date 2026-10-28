@@ -37,6 +37,7 @@ import { ClaudeCodeError } from "../src/agent/claude-code/constants.ts";
 import { LIVE_PROCESS_IDLE_TIMEOUT_MS, liveProcessIdleTimeoutMs } from "../src/agent/claude-code/live-processes.ts";
 import { CLAUDE_CODE_MODELS } from "../src/agent/claude-code/provider.ts";
 import { authEnvRecord } from "../src/core/auth-env.ts";
+import { ClaudeLaunchError } from "../src/agent/claude-code/launch.ts";
 import { createClaudeCodeStreamFunction, toClaudeArgs, toEffort, type RunClaude } from "../src/agent/claude-code/stream.ts";
 import { toStreamJsonLine } from "../src/agent/claude-code/transcript.ts";
 
@@ -899,15 +900,16 @@ test("normal completion escalates termination when the child ignores SIGTERM", a
 	assert.equal(getOnlyCall(calls).child.signalCode, "SIGKILL");
 });
 
-test("a synchronous spawn failure removes both temp directories and the bridge", async () => {
+for (const asyncVersionFailure of [false, true]) test(`${asyncVersionFailure ? "an asynchronous version-check" : "a synchronous spawn"} failure removes both temp directories and the bridge`, async () => {
 	let resources: { cwd: string; privateDir: string; url: string } | undefined;
 	const stream = createClaudeCodeStreamFunction((args, options) => {
 		const config = JSON.parse(readFileSync(getFlagValue(args, "--mcp-config"), "utf8"));
 		resources = { cwd: options.cwd, privateDir: dirname(getFlagValue(args, "--mcp-config")), url: config.mcpServers.learnharness.url };
+		if (asyncVersionFailure) return Promise.reject(new ClaudeLaunchError("Claude Code requires an update"));
 		throw new Error("synthetic spawn failure");
 	});
 	const events = await collectEvents(stream(getModel(), normalizeContext({ messages: [HI] })));
-	assert.match(getErrorMessage(events) ?? "", /failed to start/);
+	assert.match(getErrorMessage(events) ?? "", asyncVersionFailure ? /requires an update/ : /failed to start/);
 	assert.ok(resources);
 	assert.equal(existsSync(resources.cwd), false);
 	assert.equal(existsSync(resources.privateDir), false);
