@@ -6,7 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { PathInput, INSERT_FILE_PATHS_EVENT } from "../components/path-input.tsx";
 import {
 	PATH_CARET_ATTRIBUTE, PATH_SOURCE_ATTRIBUTE, PathInputHistory, adjacentPathRange, atomicPathRange,
-	insertFilePaths, normalizePathEdit, normalizePathInputValue, pathInputOffset, pathInputPoint, readPathInput,
+	insertFilePaths, normalizePathEdit, normalizePathInputValue, pathInputOffset, pathInputPoint, pathInputStaticRange, readPathInput,
 	readPathSelection, renderPathInput, replacePathSelection, restorePathSelection,
 } from "../components/path-input-dom.ts";
 import { quoteFilePath } from "../src/core/file-paths.ts";
@@ -226,6 +226,144 @@ test("native typing, token insertion/deletion and undo/redo share one history", 
 	assert.equal(f.value, "a");
 	await f.event("beforeinput", { inputType: "historyRedo" });
 	assert.equal(f.value, "ab");
+});
+
+test("Cmd+Backspace delegates line extent to beforeinput instead of deleting just the final chip", async () => {
+	const source = "Explain `/tmp/notes.pdf`";
+	const f = await fixture(source);
+	f.select(source.length);
+	const key = await f.event("keydown", { key: "Backspace", metaKey: true });
+	assert.equal(key.defaultPrevented, false);
+	assert.equal(f.value, source);
+	const deletion = await f.event("beforeinput", {
+		inputType: "deleteSoftLineBackward",
+		getTargetRanges: () => [{ startContainer: f.root.firstChild!, startOffset: 0, endContainer: f.root, endOffset: f.root.childNodes.length }],
+	});
+	assert.equal(deletion.defaultPrevented, true);
+	assert.equal(f.value, "");
+	await f.event("keydown", { key: "z", metaKey: true });
+	assert.equal(f.value, source);
+	assert.deepEqual(readPathSelection(f.root), { anchor: source.length, focus: source.length });
+});
+
+test("native word and soft/hard line deletion ranges retain mixed text/chip extents in both directions", async () => {
+	const source = "keep old `/tmp/notes.pdf` tail\nnext";
+	const f = await fixture(source);
+	const lineEnd = source.indexOf("\n");
+	const chipEnd = source.indexOf(" tail");
+	const cases = [
+		["deleteWordBackward", 5, lineEnd], ["deleteWordForward", 5, chipEnd],
+		["deleteSoftLineBackward", 0, lineEnd], ["deleteSoftLineForward", 5, lineEnd],
+		["deleteHardLineBackward", 0, chipEnd], ["deleteHardLineForward", 5, lineEnd],
+	] as const;
+	for (const [inputType, start, end] of cases) {
+		await f.external(source);
+		const backward = inputType.endsWith("Backward");
+		f.select(backward ? end : start);
+		const key = await f.event("keydown", { key: backward ? "Backspace" : "Delete", ctrlKey: true });
+		assert.equal(key.defaultPrevented, false, inputType);
+		assert.equal(f.value, source);
+		const a = pathInputPoint(f.root, start);
+		const b = pathInputPoint(f.root, end);
+		const deletion = await f.event("beforeinput", {
+			inputType,
+			getTargetRanges: () => [{ startContainer: a.node, startOffset: a.offset, endContainer: b.node, endOffset: b.offset }],
+		});
+		assert.equal(deletion.defaultPrevented, true, inputType);
+		assert.equal(f.value, source.slice(0, start) + source.slice(end), inputType);
+		assert.deepEqual(readPathSelection(f.root), { anchor: start, focus: start });
+	}
+});
+
+test("deleteEntireSoftLine honors the browser extent and never substitutes a chip when ranges are absent", async () => {
+	const source = "before\nExplain `/tmp/notes.pdf` tail\nafter";
+	const f = await fixture(source);
+	const start = source.indexOf("Explain");
+	const end = source.indexOf("\nafter");
+	f.select(source.indexOf("`")); // Adjacent to a chip, but not a chip-only command.
+	for (const getTargetRanges of [undefined, () => []]) {
+		const missing = await f.event("beforeinput", { inputType: "deleteEntireSoftLine", getTargetRanges });
+		assert.equal(missing.defaultPrevented, false);
+		assert.equal(f.value, source);
+	}
+	const a = pathInputPoint(f.root, start);
+	const b = pathInputPoint(f.root, end);
+	const deletion = await f.event("beforeinput", {
+		inputType: "deleteEntireSoftLine",
+		getTargetRanges: () => [{ startContainer: a.node, startOffset: a.offset, endContainer: b.node, endOffset: b.offset }],
+	});
+	assert.equal(deletion.defaultPrevented, true);
+	assert.equal(f.value, "before\n\nafter");
+	assert.deepEqual(readPathSelection(f.root), { anchor: start, focus: start });
+});
+
+test("browser target ranges that intersect a visual chip interior expand the complete source atomically", async () => {
+	const source = "keep old `/tmp/notes.pdf` tail";
+	const f = await fixture(source);
+	f.select(5);
+	const label = f.root.querySelector(`[${PATH_SOURCE_ATTRIBUTE}] [role=img] span`)!.firstChild!;
+	const start = pathInputPoint(f.root, 5);
+	const target = { startContainer: start.node, startOffset: start.offset, endContainer: label, endOffset: 2 };
+	const mapped = pathInputStaticRange(f.root, target)!;
+	assert.ok(mapped.focus > source.indexOf("`"));
+	assert.ok(mapped.focus < source.lastIndexOf("`") + 1);
+	await f.event("beforeinput", { inputType: "deleteWordForward", getTargetRanges: () => [target] });
+	assert.equal(f.value, "keep  tail");
+	assert.equal(f.root.querySelector(`[${PATH_SOURCE_ATTRIBUTE}]`), null);
+});
+
+test("missing or invalid word/line target ranges defer to native editing and preserve owned undo", async () => {
+	const source = "Explain `/tmp/notes.pdf`";
+	const f = await fixture(source);
+	f.select(source.length);
+	for (const modifier of ["metaKey", "ctrlKey", "altKey"]) {
+		for (const key of ["Backspace", "Delete"]) {
+			const event = await f.event("keydown", { key, [modifier]: true });
+			assert.equal(event.defaultPrevented, false);
+			assert.equal(f.value, source);
+		}
+	}
+	for (const inputType of ["deleteWordBackward", "deleteWordForward", "deleteSoftLineBackward", "deleteSoftLineForward", "deleteHardLineBackward", "deleteHardLineForward"]) {
+		for (const getTargetRanges of [undefined, () => []]) {
+			const beforeInput = await f.event("beforeinput", { inputType, getTargetRanges });
+			assert.equal(beforeInput.defaultPrevented, false, `${inputType} must not fall through to adjacent-chip deletion`);
+			assert.equal(f.value, source);
+		}
+	}
+	const valid = { startContainer: f.root, startOffset: 0, endContainer: f.root, endOffset: f.root.childNodes.length };
+	for (const getTargetRanges of [
+		undefined, () => [], () => [{ ...valid, startContainer: f.doc.body }],
+		() => [{ ...valid, startOffset: -1 }], () => [{ ...valid, endOffset: 999 }],
+		() => [{ ...valid, endOffset: 0 }], () => [valid, valid], () => { throw new Error("not available"); },
+	]) {
+		const beforeInput = await f.event("beforeinput", { inputType: "deleteWordBackward", getTargetRanges });
+		assert.equal(beforeInput.defaultPrevented, false);
+		assert.equal(f.value, source);
+	}
+	// With no usable target ranges the browser edits the DOM, then input projects it.
+	await f.nativeText("", "deleteHardLineBackward");
+	assert.equal(f.value, "");
+	await f.event("keydown", { key: "z", metaKey: true });
+	assert.equal(f.value, source);
+});
+
+test("ordinary backward/forward chip deletion and selected ranges retain their existing behavior", async () => {
+	const source = "a `/tmp/notes.pdf` b";
+	const f = await fixture(source);
+	f.select(source.length - 2);
+	const backspace = await f.event("keydown", { key: "Backspace" });
+	assert.equal(backspace.defaultPrevented, true);
+	assert.equal(f.value, "a  b");
+	await f.external(source);
+	f.select(2);
+	const forward = await f.event("keydown", { key: "Delete" });
+	assert.equal(forward.defaultPrevented, true);
+	assert.equal(f.value, "a  b");
+	await f.external(source);
+	f.select(source.length, 0);
+	const selected = await f.event("keydown", { key: "Backspace" });
+	assert.equal(selected.defaultPrevented, true);
+	assert.equal(f.value, "");
 });
 
 test("immutable SSR fallback never stomps native edits, controlled updates, chips or reset", async () => {

@@ -110,6 +110,18 @@ export function pathInputOffset(root: HTMLElement, node: Node, offset: number): 
 	return total;
 }
 
+/** Validate a browser beforeinput StaticRange before projecting its exact endpoints. */
+export function pathInputStaticRange(root: HTMLElement, range: Pick<StaticRange, "startContainer" | "startOffset" | "endContainer" | "endOffset">): TextSelection | null {
+	function valid(node: Node, offset: number) {
+		return (node === root || root.contains(node)) && Number.isInteger(offset) && offset >= 0
+			&& offset <= (node.nodeType === 3 ? (node as Text).length : node.childNodes.length);
+	}
+	if (!valid(range.startContainer, range.startOffset) || !valid(range.endContainer, range.endOffset)) return null;
+	const anchor = pathInputOffset(root, range.startContainer, range.startOffset);
+	const focus = pathInputOffset(root, range.endContainer, range.endOffset);
+	return anchor === null || focus === null || anchor >= focus ? null : { anchor, focus };
+}
+
 export function readPathSelection(root: HTMLElement): TextSelection | null {
 	const selection = root.ownerDocument.getSelection?.();
 	if (!selection?.anchorNode || !selection.focusNode) return null;

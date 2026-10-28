@@ -6,7 +6,7 @@ import { FilePathChip } from "./file-path-chip";
 import { cn } from "../lib/utils";
 import {
 	adjacentPathRange, atomicPathRange, clampPathSelection, insertFilePaths,
-	normalizePathEdit, normalizePathInputValue, PathInputHistory, readPathInput, readPathSelection, renderPathInput,
+	normalizePathEdit, normalizePathInputValue, pathInputStaticRange, PathInputHistory, readPathInput, readPathSelection, renderPathInput,
 	replacePathSelection, restorePathSelection,
 	type PathEditSnapshot, type TextSelection,
 } from "./path-input-dom";
@@ -123,6 +123,18 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 				// The cut handler owns both the full-source clipboard and deletion.
 				// Never perform a second deletion if a browser also sends beforeinput.
 				event.preventDefault();
+			} else if (/^delete(?:(?:Word|SoftLine|HardLine)(?:Backward|Forward)|EntireSoftLine)$/.test(event.inputType)) {
+				// Modifier keys have platform-specific word/visual-line semantics.
+				// Only the browser knows that extent; never substitute an adjacent chip.
+				let targets: StaticRange[] = [];
+				try { targets = event.getTargetRanges?.() ?? []; } catch { /* Native fallback below. */ }
+				const range = targets.length === 1 ? pathInputStaticRange(root, targets[0]!) : null;
+				if (range && event.cancelable) {
+					event.preventDefault();
+					// replacePathSelection expands any intersected chip atomically.
+					change(replacePathSelection(current, range, ""));
+				}
+				// Missing/invalid/non-single targets: native edit + input projection owns it.
 			} else if (event.inputType.startsWith("delete")) {
 				const range = adjacentPathRange(current, saved, event.inputType.includes("Backward") ? "backward" : "forward");
 				if (range) {
@@ -151,7 +163,7 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 			if ((event.metaKey || event.ctrlKey) && !event.altKey && (event.key.toLowerCase() === "z" || event.key.toLowerCase() === "y")) {
 				event.preventDefault();
 				travel(event.key.toLowerCase() === "y" || event.shiftKey ? "redo" : "undo");
-			} else if (event.key === "Backspace" || event.key === "Delete") {
+			} else if ((event.key === "Backspace" || event.key === "Delete") && !event.metaKey && !event.ctrlKey && !event.altKey) {
 				const range = adjacentPathRange(current, saved, event.key === "Backspace" ? "backward" : "forward");
 				if (range) {
 					event.preventDefault();
