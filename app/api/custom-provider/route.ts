@@ -16,13 +16,14 @@ import {
 	discoverModels,
 	effectiveSettings,
 	keyValue,
+	mergeManualModels,
 	parseCustomModelOverridesBody,
 	readSettingsRecord,
 	saveKey,
 	syncCustomProvider,
 	writeSettingsRecord,
 } from "@/src/server";
-import { CUSTOM_PROVIDER, normalizeBaseUrl, sanitizeCustomModelOverrides } from "@/src/core";
+import { CUSTOM_PROVIDER, normalizeBaseUrl, parseModelIds, sanitizeCustomModelOverrides } from "@/src/core";
 
 export const dynamic = "force-dynamic";
 
@@ -32,12 +33,13 @@ export async function GET() {
 		baseUrl: cp.baseUrl,
 		models: cp.models,
 		overrides: cp.overrides,
+		manualModels: cp.manualModels,
 		keyPresent: keyValue(CUSTOM_PROVIDER.envVar) !== undefined,
 	});
 }
 
 export async function POST(request: Request) {
-	const body = (await request.json().catch(() => null)) as { baseUrl?: unknown; key?: unknown } | null;
+	const body = (await request.json().catch(() => null)) as { baseUrl?: unknown; key?: unknown; manualModels?: unknown } | null;
 	const base = normalizeBaseUrl(typeof body?.baseUrl === "string" ? body.baseUrl : "");
 	if (!base) return Response.json({ error: "Base URL must be a valid http(s) URL" }, { status: 400 });
 
@@ -45,9 +47,12 @@ export async function POST(request: Request) {
 	const keyProvided = typeof body?.key === "string";
 	const key = keyProvided ? (body!.key as string).trim() : undefined;
 
-	// Probe first: a URL that doesn't answer with a model list never persists.
+	const manualModels = parseModelIds(body?.manualModels);
 	const found = await discoverModels(base, key ? key : undefined);
-	if (!found.ok) return Response.json({ error: found.error }, { status: 502 });
+	if (!found.ok && !manualModels.length) {
+		return Response.json({ error: `${found.error}. If this endpoint has no /models list, add model IDs manually.` }, { status: 502 });
+	}
+	const models = mergeManualModels(found.ok ? found.models : [], manualModels);
 
 	if (keyProvided) {
 		if (key) {
@@ -63,11 +68,11 @@ export async function POST(request: Request) {
 	// endpoint still advertises (the single prune law, core/settings.ts).
 	const overrides = sanitizeCustomModelOverrides(
 		record.customProvider?.overrides,
-		found.models.map((m) => m.id),
+		models.map((m) => m.id),
 	);
 	const next = writeSettingsRecord({
 		...record,
-		customProvider: { baseUrl: base, models: found.models, overrides },
+		customProvider: { baseUrl: base, models, overrides, ...(manualModels.length ? { manualModels } : {}) },
 	});
 	syncCustomProvider(next.customProvider);
 	return Response.json({ ok: true, models: next.customProvider?.models ?? [] });
@@ -89,7 +94,7 @@ export async function PATCH(request: Request) {
 	const record = readSettingsRecord() ?? { version: 1 };
 	const next = writeSettingsRecord({
 		...record,
-		customProvider: { baseUrl: cp.baseUrl, models: cp.models, overrides },
+		customProvider: { baseUrl: cp.baseUrl, models: cp.models, overrides, ...(cp.manualModels.length ? { manualModels: cp.manualModels } : {}) },
 	});
 	syncCustomProvider(next.customProvider);
 	return Response.json({ ok: true, overrides: next.customProvider?.overrides ?? {} });

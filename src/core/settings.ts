@@ -259,6 +259,13 @@ export interface CustomProviderSettings {
 	/** User pins keyed by model id — pure user intent, never rewritten by
 	 *  discovery, pruned to the endpoint's live ids on connect. */
 	overrides?: Record<string, CustomModelOverride>;
+	manualModels?: string[];
+}
+
+export function parseModelIds(raw: unknown): string[] {
+	const items = typeof raw === "string" ? raw.split(/[\s,]+/) : Array.isArray(raw) ? raw : [];
+	const ids = items.filter((v): v is string => typeof v === "string").map((v) => v.trim()).filter(Boolean);
+	return [...new Set(ids)];
 }
 
 /** Canonical base-URL form (single source): trims, requires absolute http(s),
@@ -644,6 +651,8 @@ function sanitizeCustomProvider(raw: Record<string, unknown>): CustomProviderSet
 	}
 	const overrides = sanitizeCustomModelOverrides(raw.overrides);
 	if (Object.keys(overrides).length) out.overrides = overrides;
+	const manualModels = parseModelIds(raw.manualModels);
+	if (manualModels.length) out.manualModels = manualModels;
 	return out;
 }
 
