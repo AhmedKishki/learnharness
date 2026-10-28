@@ -1,9 +1,12 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import {
+const testData = fs.mkdtempSync(path.join(os.tmpdir(), "lh-cli-catalog-data-"));
+process.env.LH_DATA_DIR = testData;
+after(() => fs.rmSync(testData, { recursive: true, force: true }));
+const {
 	catalogContextLimits,
 	catalogDefaultsFor,
 	catalogProviders,
@@ -16,17 +19,18 @@ import {
 	toModelDto,
 	validateChatSettings,
 	validateModelsSettings,
-} from "../src/server/model-catalog.ts";
+} = await import("../src/server/model-catalog.ts");
 import type { EffectiveSlot } from "../src/core/settings-resolution.ts";
 import type { SettingsValidation } from "../src/server/model-catalog.ts";
 import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { DEFAULT_THINKING_ORDER } from "../src/core/settings.ts";
-import { piEngineForSpec, piModels } from "../src/agent/models.ts";
+const { piEngineForSpec, piModels } = await import("../src/agent/models.ts");
 import { BACKGROUND_MODEL_ROLES } from "../src/core/settings.ts";
 import { resolveSettings } from "../src/core/settings-resolution.ts";
-import { readSettings } from "../src/store/settings.ts";
-import { effectiveSettings } from "../src/server/stores.ts";
-import { providerKeyPresent } from "../src/server/keys.ts";
+const { readSettings, writeSettings } = await import("../src/store/settings.ts");
+const { SETTINGS_FILE } = await import("../config.ts");
+const { effectiveSettings } = await import("../src/server/stores.ts");
+const { providerKeyPresent } = await import("../src/server/keys.ts");
 
 // The model-control wave (2026-09-12): pi-ai owns the registry — these pins
 // hold our projection + validation honest against the shipped catalog, and
@@ -337,9 +341,11 @@ describe("pi thinking truth (pinned against pi-ai upgrades)", () => {
 });
 /** Runs fn with PATH and HOME pointed at a temp dir, so the CLI lookup only
  *  finds a claude binary when installed is true. */
-function withClaudeInstalled(installed: boolean, fn: () => void): void {
+function withClaudeInstalled(installed: boolean, fn: () => void, enabled = true): void {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-catalog-"));
 	const saved = { PATH: process.env.PATH, HOME: process.env.HOME, npm_config_prefix: process.env.npm_config_prefix };
+	const settings = readSettings();
+	writeSettings({ ...(settings ?? { version: 1 }), claudeCode: { enabled } });
 
 	if (installed) fs.writeFileSync(path.join(dir, "claude"), "#!/bin/sh\n", { mode: 0o755 });
 	process.env.PATH = dir;
@@ -353,6 +359,8 @@ function withClaudeInstalled(installed: boolean, fn: () => void): void {
 			if (value === undefined) delete process.env[name];
 			else process.env[name] = value;
 		}
+		if (settings) writeSettings(settings);
+		else fs.rmSync(SETTINGS_FILE, { force: true });
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
 }
@@ -397,8 +405,14 @@ describe("the claude-code provider (native CLI authentication, no LearnHarness k
 		assert.equal(engine.model.id, "sonnet");
 	});
 
-	it('providerKeyPresent("claude-code") follows executable presence, not a generic keyless default', () => {
+	it('providerKeyPresent("claude-code") requires both explicit opt-in and executable presence', () => {
 		withClaudeInstalled(true, () => assert.equal(providerKeyPresent("claude-code"), true));
 		withClaudeInstalled(false, () => assert.equal(providerKeyPresent("claude-code"), false));
+		withClaudeInstalled(true, () => {
+			assert.equal(providerKeyPresent("claude-code"), false);
+			assert.equal(catalogProviders().find((p) => p.id === "claude-code")?.keyPresent, false);
+			assert(!modelCatalog().models.some((m) => m.provider === "claude-code"));
+			assert.equal(validateChatSettings({ model: { provider: "claude-code", id: "sonnet" } }).ok, false);
+		}, false);
 	});
 });

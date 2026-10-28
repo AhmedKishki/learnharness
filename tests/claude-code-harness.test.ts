@@ -15,19 +15,26 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import test, { type TestContext } from "node:test";
+import test, { after, type TestContext } from "node:test";
 
-import { PATHS } from "../config.ts";
-import { LIVE_PROCESS_IDLE_TIMEOUT_MS, liveProcessIdleTimeoutMs } from "../src/agent/claude-code/live-processes.ts";
-import { CLAUDE_CODE_MODELS } from "../src/agent/claude-code/provider.ts";
-import { createClaudeCodeStreamFunction, type RunClaude } from "../src/agent/claude-code/stream.ts";
+import type { RunClaude } from "../src/agent/claude-code/stream.ts";
 import type { PiEngine } from "../src/agent/models.ts";
-import { createTeacherAgent } from "../src/agent/teacher-agent.ts";
-import { cliContextWindowOf, danglingQuestionOf } from "../src/core/native-messages.ts";
-import { handleChatRequest } from "../src/server/chat-handler.ts";
-import { isTurnRunning } from "../src/server/turn-liveness.ts";
-import { runningTurn } from "../src/server/turn-runs.ts";
-import { chatStore } from "../src/store/chats.ts";
+
+// Opt-in writes must not race another test process's settings record.
+const testData = mkdtempSync(join(tmpdir(), "lh-cli-harness-data-"));
+process.env.LH_DATA_DIR = testData;
+after(() => rmSync(testData, { recursive: true, force: true }));
+const { PATHS, SETTINGS_FILE } = await import("../config.ts");
+const { readSettings, writeSettings } = await import("../src/store/settings.ts");
+const { LIVE_PROCESS_IDLE_TIMEOUT_MS, liveProcessIdleTimeoutMs } = await import("../src/agent/claude-code/live-processes.ts");
+const { CLAUDE_CODE_MODELS } = await import("../src/agent/claude-code/provider.ts");
+const { createClaudeCodeStreamFunction } = await import("../src/agent/claude-code/stream.ts");
+const { createTeacherAgent } = await import("../src/agent/teacher-agent.ts");
+const { cliContextWindowOf, danglingQuestionOf } = await import("../src/core/native-messages.ts");
+const { handleChatRequest } = await import("../src/server/chat-handler.ts");
+const { isTurnRunning } = await import("../src/server/turn-liveness.ts");
+const { runningTurn } = await import("../src/server/turn-runs.ts");
+const { chatStore } = await import("../src/store/chats.ts");
 
 const FAKE_CLAUDE = fileURLToPath(new URL("./fixtures/claude-code/fake-claude.mjs", import.meta.url));
 const TEXT_FIXTURE = fileURLToPath(new URL("./fixtures/claude-code/text.jsonl", import.meta.url));
@@ -61,6 +68,9 @@ function toAskScenario(): string[] {
 }
 
 function createFakeRun(t: TestContext, scenarios: string[][]): FakeRun {
+	const settings = readSettings();
+	writeSettings({ ...(settings ?? { version: 1 }), claudeCode: { enabled: true } });
+	t.after(() => { if (settings) writeSettings(settings); else rmSync(SETTINGS_FILE, { force: true }); });
 	const dir = mkdtempSync(join(tmpdir(), "claude-code-harness-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	// Satisfy the real presence gate; this marker is NEVER executed. All work
@@ -154,6 +164,47 @@ async function waitForExit(child: ChildProcessWithoutNullStreams): Promise<void>
 
 	await once(child, "exit", { signal: AbortSignal.timeout(TURN_TIMEOUT_MS) });
 }
+
+test("disabled opt-in refuses a saved CLI chat before write-ahead, liveness, or agent creation", async (t) => {
+	const fakeRun = createFakeRun(t, [toAskScenario()]);
+	const chatId = createClaudeCodeChat(t);
+	writeSettings({ ...(readSettings() ?? { version: 1 }), claudeCode: { enabled: false } });
+	const before = chatStore.getChat(chatId)!.messages;
+	const response = await handleChatRequest(new Request("http://test/api/chat", { method: "POST", headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ chatId, input: { type: "text", text: "must not start" } }) }), () => assert.fail("disabled work must not build an agent"));
+	assert.equal(response.status, 503);
+	assert.match((await response.json()).error, /Enable and set it up in Settings/);
+	assert.equal(isTurnRunning(chatId), false); assert.equal(fakeRun.children.length, 0);
+	assert.deepEqual(chatStore.getChat(chatId)!.messages, before);
+	assert.deepEqual(chatStore.getChat(chatId)!.settings?.model, { provider: "claude-code", id: "sonnet" });
+});
+
+test("switching off blocks future requests but does not interrupt an already admitted CLI turn", async (t) => {
+	const scenario = [JSON.stringify({ fake: "checkpoint" }), JSON.stringify({ fake: "wait-for-message" }), ...readFileSync(TEXT_FIXTURE, "utf8").trim().split("\n")];
+	const fakeRun = createFakeRun(t, [scenario]);
+	const run = fakeRun.runClaude;
+	let ready!: (child: ChildProcessWithoutNullStreams) => void;
+	let failed!: (error: unknown) => void;
+	const checkpoint = new Promise<ChildProcessWithoutNullStreams>((resolve, reject) => { ready = resolve; failed = reject; });
+	fakeRun.runClaude = async (args, options) => {
+		const child = await run(args, options); assert(child);
+		void once(child, "message", { signal: AbortSignal.timeout(TURN_TIMEOUT_MS) }).then(() => ready(child), failed);
+		return child;
+	};
+	const chatId = createClaudeCodeChat(t);
+	const response = await handleChatRequest(new Request("http://test/api/chat", { method: "POST", headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ chatId, input: { type: "text", text: "complete this admitted fixture" } }) }), createAgentFactory(fakeRun));
+	assert.equal(response.status, 200);
+	const child = await checkpoint;
+	const handle = runningTurn(chatId); assert(handle);
+	const finished = new Response(handle.subscribe()).text();
+	writeSettings({ ...(readSettings() ?? { version: 1 }), claudeCode: { enabled: false } });
+	assert.equal(child.signalCode, null, "opt-out must not kill an already running process");
+	child.send("continue"); await finished;
+	assert(getLastAssistantText(chatId).length > 0, "the admitted turn completes normally");
+	assert.equal(readSettings()?.claudeCode?.enabled, false);
+	await waitForExit(child);
+});
 
 test("a question answered before the idle timeout continues the waiting CLI process with the answer", async (t) => {
 	const fakeRun = createFakeRun(t, [toAskScenario()]);

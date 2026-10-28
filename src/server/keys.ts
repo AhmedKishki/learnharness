@@ -53,7 +53,7 @@ import {
 } from "../core/auth-keys.ts";
 import { authStore } from "../store/auth.ts";
 import { isSubscriptionProvider, subscriptionConnected } from "../agent/subscription-connections.ts";
-import { getClaudeBinary } from "../agent/claude-code/binary.ts";
+import { claudeCodeAvailable } from "./claude-code-config.ts";
 import { CLAUDE_CODE_PROVIDER } from "../agent/claude-code/constants.ts";
 
 // Shared HMR-stable provenance lets external CLIs exclude file-only injections
@@ -189,8 +189,9 @@ export function keyValue(id: string): string | undefined {
  * (gate by what would run). Providers absent from AUTH_PROVIDER_KEYS take
  * no key at all: nothing to gate, present by definition. */
 export function providerKeyPresent(provider: string): boolean {
-	// Presence only, not authentication readiness. Launch performs the version gate.
-	if (provider === CLAUDE_CODE_PROVIDER) return getClaudeBinary() !== null;
+	// Explicit opt-in + installation only, never authentication readiness.
+	// Consulted at admission, not inside already-running agent loops.
+	if (provider === CLAUDE_CODE_PROVIDER) return claudeCodeAvailable();
 	if (isSubscriptionProvider(provider)) return subscriptionConnected(provider);
 	const info = AUTH_PROVIDER_KEYS.find((p) => p.id === provider);
 	return info ? keyValue(info.envVar) !== undefined : true;

@@ -1,6 +1,7 @@
 import { inspectClaudeInstallation } from "../agent/claude-code/installation.ts";
 import { initAuthEnv } from "./keys.ts";
 import { subscriptionRequestOrigin } from "./web-subscription-http.ts";
+import { claudeCodeEnabled } from "./claude-code-config.ts";
 
 /** The Settings status seam: initialize provenance before any child env is copied. */
 export async function claudeCodeInstallationStatus() {
@@ -13,6 +14,7 @@ export async function claudeCodeInstallationStatus() {
 export async function claudeCodeInstallationResponse(
 	request: Request,
 	inspect = claudeCodeInstallationStatus,
+	enabled = claudeCodeEnabled,
 ): Promise<Response> {
 	const origin = subscriptionRequestOrigin(request);
 	const supplied = request.headers.get("origin");
@@ -23,5 +25,6 @@ export async function claudeCodeInstallationResponse(
 		|| (supplied !== null && supplied !== origin)) {
 		return Response.json({ error: "Claude Code checks require a same-origin LearnHarness request." }, { status: 403, headers });
 	}
+	if (!enabled()) return Response.json({ error: "Claude Code is disabled." }, { status: 403, headers });
 	return Response.json(await inspect(), { headers });
 }

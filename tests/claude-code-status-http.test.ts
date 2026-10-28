@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { claudeCodeInstallationResponse } from "../src/server/claude-code.ts";
+import { claudeCodeInstallationResponse as respond } from "../src/server/claude-code.ts";
+const claudeCodeInstallationResponse: typeof respond = (request, inspect) => respond(request, inspect, () => true);
 
 function request(headers: Record<string, string> = {}) {
 	return new Request("http://localhost:3000/api/claude-code", { headers: { "x-learnharness-claude-code": "1", ...headers } });
@@ -18,6 +19,12 @@ for (const headers of [
 	const response = await claudeCodeInstallationResponse(request(headers), async () => { probes++; return status; });
 	assert.equal(response.status, 403); assert.equal(probes, 0);
 	assert.equal(response.headers.get("access-control-allow-origin"), null);
+});
+
+test("disabled opt-in never starts even a version probe", async () => {
+	let probes = 0;
+	const response = await respond(request(), async () => { probes++; return status; }, () => false);
+	assert.equal(response.status, 403); assert.equal(probes, 0);
 });
 
 test("ordinary image/subresource GET without intent header cannot start a probe", async () => {

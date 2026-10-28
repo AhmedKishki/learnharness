@@ -239,7 +239,7 @@ describe("SETTINGS_SECTIONS (the route's section map)", () => {
 		// threshold is engine behavior, not an agent-section key.
 		assert.deepEqual(
 			Object.keys(SETTINGS_SECTIONS),
-			["general", "chat", "agent", "appearance", "graph", "compaction", "models", "dictation"],
+			["general", "chat", "agent", "appearance", "graph", "compaction", "models", "dictation", "claudeCode"],
 		);
 	});
 });
