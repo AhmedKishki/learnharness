@@ -21,9 +21,11 @@ export interface ModelCatalogEntry {
 	 * thinkingLevelMap — e.g. GLM-5.3-flash: low|high|max). The thinking
 	 * picker lists exactly these; anything else is a lie. */
 	supportedLevels: ThinkingLevel[];
-	cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
-	contextWindow: number;
-	maxTokens: number;
+	/** Null when LearnHarness cannot estimate prices for this connection. */
+	cost: { input: number; output: number; cacheRead: number; cacheWrite: number } | null;
+	/** Null for native CLI aliases whose effective limits are session-specific. */
+	contextWindow: number | null;
+	maxTokens: number | null;
 }
 
 /** The conversation agents' resolved default (BYOK, owner 2026-09-22): the

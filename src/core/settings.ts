@@ -29,6 +29,7 @@
 
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { AUTH_PROVIDER_KEYS } from "./auth-keys.ts";
+import { CLAUDE_CODE_PROVIDER } from "./contracts/claude-code.ts";
 import type { ModelRole } from "../../config.ts";
 import type { ChatSettings } from "./contracts/chat.ts";
 import type { SearchEngineId } from "./search.ts";
@@ -156,10 +157,11 @@ export interface ProviderKeyMissing {
 /** The refusal wording's invariant tail — the matcher below keys on it
  * (the label prefix varies by provider). */
 const PROVIDER_KEY_MISSING_TAIL = "key is set — add one in Settings → Keys";
+const CLAUDE_CODE_UNAVAILABLE = "Claude Code is unavailable. Enable and set it up in Settings → Providers.";
 export function providerKeyMissing(provider: string, slots: ModelSlotName[]): ProviderKeyMissing {
 	const label = AUTH_PROVIDER_KEYS.find((p) => p.id === provider)?.label ?? provider;
 	return {
-		error: `No ${label} ${PROVIDER_KEY_MISSING_TAIL}`,
+		error: provider === CLAUDE_CODE_PROVIDER ? CLAUDE_CODE_UNAVAILABLE : `No ${label} ${PROVIDER_KEY_MISSING_TAIL}`,
 		code: PROVIDER_KEY_MISSING_CODE,
 		provider,
 		slots,
@@ -170,7 +172,7 @@ export function providerKeyMissing(provider: string, slots: ModelSlotName[]): Pr
  * scary-error) — the envelope's home module owns the string so the
  * writer and the matcher can never drift. */
 export function isProviderKeyRefusal(error: string | undefined): boolean {
-	return !!error && error.endsWith(PROVIDER_KEY_MISSING_TAIL);
+	return !!error && (error.endsWith(PROVIDER_KEY_MISSING_TAIL) || error === CLAUDE_CODE_UNAVAILABLE);
 }
 /** The typed throw for in-process seams (extraction pipeline) — the
  * ProviderKeyMissing sibling of ModelsNotConfiguredError: callers catch
@@ -368,6 +370,8 @@ export interface UserSettings {
 	version: number;
 	general?: GeneralSettings;
 	dictation?: DictationSettings;
+	/** Explicit app-wide opt-in; absent/invalid is off, including older records. */
+	claudeCode?: { enabled?: boolean };
 	agent?: AgentSettings;
 	/** The strong/cheap/vision model slots (model slots wave, 2026-09-20). */
 	models?: ModelsSettings;
@@ -630,6 +634,12 @@ export function sanitizeUserSettings(raw: unknown): UserSettings | null {
 			isDictationLanguage((raw as Record<string, unknown>).language)
 			? { language: (raw as DictationSettings).language }
 			: {};
+	}
+	if (r.claudeCode !== undefined) {
+		const raw = r.claudeCode;
+		out.claudeCode = raw !== null && typeof raw === "object" && !Array.isArray(raw)
+			&& typeof (raw as Record<string, unknown>).enabled === "boolean"
+			? { enabled: (raw as { enabled: boolean }).enabled } : {};
 	}
 	if (r.agent !== null && typeof r.agent === "object" && !Array.isArray(r.agent)) {
 		out.agent = sanitizeAgent(r.agent as Record<string, unknown>);

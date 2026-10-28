@@ -38,6 +38,7 @@ import { useServerEvent, useServerResync } from "@/components/server-events";
 import {
 	isProviderKeyRefusal,
 	firstSourceTextParts,
+	cliContextWindowOf,
 	messageAnchorId,
 	textPartMessageId,
 	kbdEventForAction as kbdEventForChat,
@@ -1691,6 +1692,7 @@ export function Chat({
 					phase={phases.at(-1) ?? "probe"}
 					turns={turns}
 					contextTokens={contextTokens}
+					cliContextWindow={cliContextWindowOf(nativeMessages)}
 					pricing={pricing}
 					onReserve={setDockReserve}
 					dictationSlot={<DictationBar dictation={dictation} />}
@@ -1917,6 +1919,7 @@ function DockOverlay({
 	phase,
 	turns,
 	contextTokens,
+	cliContextWindow,
 	pricing,
 	composer,
 	onSubmitAnswer,
@@ -1953,6 +1956,7 @@ function DockOverlay({
 	/** The session's usage log — the stats bar beneath the composer folds it. */
 	turns: TurnUsage[];
 	contextTokens: number | null;
+	cliContextWindow: ReturnType<typeof cliContextWindowOf>;
 	pricing?: SessionPricing;
 	composer: React.ReactNode;
 	onSubmitAnswer: (output: QuestionAnswerData) => void;
@@ -2408,6 +2412,7 @@ function DockOverlay({
 					<StatsBar
 						turns={turns}
 						contextTokens={contextTokens}
+						cliContextWindow={cliContextWindow}
 						pricing={pricing}
 						dictationSlot={dictationSlot}
 						chatId={chatId}

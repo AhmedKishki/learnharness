@@ -55,24 +55,12 @@ import { authStore } from "../store/auth.ts";
 import { isSubscriptionProvider, subscriptionConnected } from "../agent/subscription-connections.ts";
 import { piModels } from "../agent/models.ts";
 import { customProviderConfigured, installCustomProviderSource } from "./custom-providers.ts";
+import { claudeCodeAvailable } from "./claude-code-config.ts";
+import { CLAUDE_CODE_PROVIDER } from "../agent/claude-code/constants.ts";
 
-// The once-per-process boot record — globalThis anchor (HMR re-imports the
-// module; the snapshot must not re-run and misread fill-gapped vars as real
-// env). Same pattern as globalThis.__lhExtractionRuns.
-interface AuthBoot {
-	/** Vars that were in the REAL env at first init — env precedence's
-	 *  untouchable set. Fill-gapped vars are everything else we set. */
-	realEnv: Set<string>;
-	/** Vars WE put into process.env (the file's reflection) — deletable. */
-	fillGap: Set<string>;
-}
-const BOOT_KEY = Symbol.for("lh.authBoot");
-
-function boot(): AuthBoot {
-	const g = globalThis as Record<symbol, AuthBoot | undefined>;
-	if (!g[BOOT_KEY]) g[BOOT_KEY] = { realEnv: new Set(), fillGap: new Set() };
-	return g[BOOT_KEY];
-}
+// Shared HMR-stable provenance lets external CLIs exclude file-only injections
+// without importing this store-backed module into the agent layer.
+import { authEnvRecord as boot } from "../core/auth-env.ts";
 
 /** Is `id` a WRITABLE key name — curated catalog or model-provider env
  *  var (provider-keys interlude: PUT/DELETE accept both). */
@@ -206,6 +194,9 @@ export function providerKeyPresent(provider: string): boolean {
 	piModels(); // Synchronize hand-edited custom configuration before admission.
 	const custom = customProviderConfigured(provider);
 	if (custom !== undefined) return custom;
+	// Explicit opt-in + installation only, never authentication readiness.
+	// Consulted at admission, not inside already-running agent loops.
+	if (provider === CLAUDE_CODE_PROVIDER) return claudeCodeAvailable();
 	if (isSubscriptionProvider(provider)) return subscriptionConnected(provider);
 	const info = AUTH_PROVIDER_KEYS.find((p) => p.id === provider);
 	return info ? keyValue(info.envVar) !== undefined : true;
