@@ -59,6 +59,12 @@ test("windows prefers claude.exe anywhere over claude.cmd, which Node cannot spa
 	assert.equal(resolveWith(executables, env, "win32", winHome), `${winHome}\\.local\\bin\\claude.exe`);
 });
 
+test("relative Windows PATH entries are fixed to an absolute discovery identity", () => {
+	assert.equal(resolveClaudeBinary({ env: { PATH: ".\\bin" }, platform: "win32", homeDir: "C:\\Users\\u", cwd: "C:\\server",
+		isExecutable: (candidate) => candidate === "C:\\server\\bin\\claude.exe",
+	}), "C:\\server\\bin\\claude.exe");
+});
+
 test("returns null when every location misses", () => {
 	assert.equal(resolveWith([], { PATH: "/usr/bin:/bin" }), null);
 });

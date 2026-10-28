@@ -47,6 +47,7 @@ test("mount checks once, Check again refreshes, and neither request asks for aut
 	globalThis.fetch = (async (url, init) => {
 		calls.push(String(url));
 		assert.equal(init?.cache, "no-store");
+		assert.equal(new Headers(init?.headers).get("x-learnharness-claude-code"), "1");
 		return Response.json(calls.length === 1 ? status("not-found") : status("meets-minimum", "2.1.310"));
 	}) as typeof fetch;
 	await mount();

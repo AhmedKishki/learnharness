@@ -1,6 +1,6 @@
-import { claudeCodeInstallationStatus } from "@/src/server";
+import { claudeCodeInstallationResponse } from "@/src/server";
 
 /** Installation/version only; never reads auth status or makes a model request. */
-export async function GET() {
-	return Response.json(await claudeCodeInstallationStatus(), { headers: { "Cache-Control": "no-store" } });
+export async function GET(request: Request) {
+	return claudeCodeInstallationResponse(request);
 }
