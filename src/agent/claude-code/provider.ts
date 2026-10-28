@@ -7,7 +7,8 @@ const SHARED_MODEL_FIELDS = {
 	provider: CLAUDE_CODE_PROVIDER,
 	baseUrl: "",
 	input: ["text", "image"],
-	// Billed to the user's Claude subscription, not per token.
+	// Placeholder rates, not a billing guarantee: the CLI's own auth/routing
+	// determines charges. Cost presentation remains a separate product decision.
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	reasoning: true,
 	// The CLI has no thinking-off switch; effort low is the floor.

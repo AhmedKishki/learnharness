@@ -54,23 +54,9 @@ import {
 import { authStore } from "../store/auth.ts";
 import { isSubscriptionProvider, subscriptionConnected } from "../agent/subscription-connections.ts";
 
-// The once-per-process boot record — globalThis anchor (HMR re-imports the
-// module; the snapshot must not re-run and misread fill-gapped vars as real
-// env). Same pattern as globalThis.__lhExtractionRuns.
-interface AuthBoot {
-	/** Vars that were in the REAL env at first init — env precedence's
-	 *  untouchable set. Fill-gapped vars are everything else we set. */
-	realEnv: Set<string>;
-	/** Vars WE put into process.env (the file's reflection) — deletable. */
-	fillGap: Set<string>;
-}
-const BOOT_KEY = Symbol.for("lh.authBoot");
-
-function boot(): AuthBoot {
-	const g = globalThis as Record<symbol, AuthBoot | undefined>;
-	if (!g[BOOT_KEY]) g[BOOT_KEY] = { realEnv: new Set(), fillGap: new Set() };
-	return g[BOOT_KEY];
-}
+// Shared HMR-stable provenance lets external CLIs exclude file-only injections
+// without importing this store-backed module into the agent layer.
+import { authEnvRecord as boot } from "../core/auth-env.ts";
 
 /** Is `id` a WRITABLE key name — curated catalog or model-provider env
  *  var (provider-keys interlude: PUT/DELETE accept both). */

@@ -36,6 +36,7 @@ import { parseCliLine } from "../src/agent/claude-code/cli-events.ts";
 import { ClaudeCodeError } from "../src/agent/claude-code/constants.ts";
 import { LIVE_PROCESS_IDLE_TIMEOUT_MS, liveProcessIdleTimeoutMs } from "../src/agent/claude-code/live-processes.ts";
 import { CLAUDE_CODE_MODELS } from "../src/agent/claude-code/provider.ts";
+import { authEnvRecord } from "../src/core/auth-env.ts";
 import { createClaudeCodeStreamFunction, toClaudeArgs, toEffort, type RunClaude } from "../src/agent/claude-code/stream.ts";
 import { toStreamJsonLine } from "../src/agent/claude-code/transcript.ts";
 
@@ -298,7 +299,9 @@ test("toClaudeArgs includes every isolation flag from Global Constraints", () =>
 		"--mcp-config",
 		"/private/mcp.json",
 		"--setting-sources",
-		"",
+		"user",
+		"--settings",
+		'{"disableAllHooks":true}',
 		"--disable-slash-commands",
 		"--no-session-persistence",
 		"--permission-prompts",
@@ -582,7 +585,7 @@ test("spawns with the model alias, effort, bridge tools, MCP_TOOL_TIMEOUT and th
 	assert.equal(call.env.CLAUDE_CONFIG_DIR, process.env.CLAUDE_CONFIG_DIR);
 });
 
-test("spawns without Anthropic API credentials so turns stay on the subscription", async (t) => {
+test("preserves existing CLI environment authentication without a subscription guarantee", async (t) => {
 	const saved = { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN: process.env.ANTHROPIC_AUTH_TOKEN };
 	t.after(() => {
 		for (const [name, value] of Object.entries(saved)) {
@@ -597,8 +600,23 @@ test("spawns without Anthropic API credentials so turns stay on the subscription
 	const { calls } = await runScenario(t, readFixtureLines("text.jsonl"));
 	const call = getOnlyCall(calls);
 
-	assert.equal(call.env.ANTHROPIC_API_KEY, undefined);
-	assert.equal(call.env.ANTHROPIC_AUTH_TOKEN, undefined);
+	assert.equal(call.env.ANTHROPIC_API_KEY, "sk-ant-test");
+	assert.equal(call.env.ANTHROPIC_AUTH_TOKEN, "token-test");
+});
+
+test("does not inject credentials reflected only from LearnHarness's key store", async (t) => {
+	const name = "ANTHROPIC_API_KEY";
+	const record = authEnvRecord();
+	const saved = process.env[name];
+	t.after(() => {
+		record.fillGap.delete(name);
+		if (saved === undefined) delete process.env[name]; else process.env[name] = saved;
+	});
+	process.env[name] = "lh-only-key";
+	record.fillGap.add(name);
+	const { calls } = await runScenario(t, readFixtureLines("text.jsonl"));
+	assert.equal(getOnlyCall(calls).env[name], undefined);
+	assert.equal(process.env[name], "lh-only-key", "other LearnHarness providers keep their env reflection");
 });
 
 test("writes the transcript as one stream-json user line on stdin", async (t) => {
@@ -911,13 +929,18 @@ test("a mismatched MCP identity cannot admit a streamed call", async (t) => {
 	await assertCleanedUp(getOnlyCall(calls));
 });
 
-for (const change of ["model", "effort", "system prompt", "tool schema", "tool description", "history"] as const) {
+for (const change of ["model", "effort", "system prompt", "tool schema", "tool description", "history", "authentication environment"] as const) {
 	test(`a changed ${change} prevents reuse of a held process`, async (t) => {
 		const read: ToolUse = { id: `toolu_reuse_${change}`, name: "read", arguments: { path: "a" } };
 		const waiting = createFakeRun(t, [...toToolUseMessage([read]), callTool(read), REPLY]);
 		const fresh = createFakeRun(t, readFixtureLines("text.jsonl"));
 		const stream = createClaudeCodeStreamFunction((args, options) => (waiting.calls.length === 0 ? waiting : fresh).runClaude(args, options));
 		const message = await runTurn(stream, [HI]);
+		if (change === "authentication environment") {
+			const saved = process.env.ANTHROPIC_AUTH_TOKEN;
+			t.after(() => { if (saved === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN; else process.env.ANTHROPIC_AUTH_TOKEN = saved; });
+			process.env.ANTHROPIC_AUTH_TOKEN = "changed-cli-auth";
+		}
 		const messages = [change === "history" ? { ...HI, content: "replacement history after compaction" } : HI, message, toToolResult(read, "A")];
 		const context = normalizeContext({
 			systemPrompt: change === "system prompt" ? "Changed tutor instructions" : "You are a tutor.",

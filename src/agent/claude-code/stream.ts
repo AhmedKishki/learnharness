@@ -23,6 +23,7 @@ import {
 import type { AnthropicEffort } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { parseStreamingJson, parseToolCallArguments } from "@earendil-works/pi-ai/utils/json-parse";
 
+import { externalCliEnv } from "../../core/auth-env.ts";
 import { getClaudeBinary } from "./binary.ts";
 import { parseCliLine, type CliBlock, type CliEvent, type CliUsage } from "./cli-events.ts";
 import { ClaudeCodeError } from "./constants.ts";
@@ -99,7 +100,9 @@ export function toClaudeArgs(input: ClaudeArgsInput): string[] {
 		"--mcp-config",
 		input.mcpConfigFile,
 		"--setting-sources",
-		"",
+		"user",
+		"--settings",
+		JSON.stringify({ disableAllHooks: true }),
 		"--disable-slash-commands",
 		"--no-session-persistence",
 		"--permission-prompts",
@@ -588,16 +591,10 @@ function continueLiveProcess(turn: ClaudeTurn, owner: symbol, sessionId: string 
 	return true;
 }
 
-// Either one takes precedence over the logged-in subscription, so a key saved on the Keys page
-// would bill turns to the API account.
-const API_CREDENTIAL_ENV_NAMES = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
-
-function toClaudeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-	const claudeEnv: NodeJS.ProcessEnv = { ...env, MCP_TOOL_TIMEOUT: String(MCP_TOOL_TIMEOUT_MS) };
-
-	for (const name of API_CREDENTIAL_ENV_NAMES) delete claudeEnv[name];
-
-	return claudeEnv;
+function toClaudeEnv(): NodeJS.ProcessEnv {
+	// Preserve native CLI auth/routing, including launch-environment credentials.
+	// Claude Code chooses the account and billing method, not LearnHarness.
+	return { ...externalCliEnv(), MCP_TOOL_TIMEOUT: String(MCP_TOOL_TIMEOUT_MS) };
 }
 
 async function startProcess(
@@ -608,6 +605,7 @@ async function startProcess(
 	options: SimpleStreamOptions | undefined,
 	owner: symbol,
 	configuration: unknown,
+	env: NodeJS.ProcessEnv,
 ): Promise<void> {
 	if (options?.signal?.aborted) { turn.fail(ABORT_MESSAGE, "aborted"); return; }
 	const input = toClaudeInput(context.messages);
@@ -639,7 +637,7 @@ async function startProcess(
 			mcpConfigFile: files.mcpConfigFile,
 			allowedTools: bridge.allowedTools,
 		});
-		child = runClaude(args, { cwd: files.cwd, env: toClaudeEnv(process.env) });
+		child = runClaude(args, { cwd: files.cwd, env });
 	} catch (error) {
 		await removeTurnResources(bridge, files);
 		throw error;
@@ -661,10 +659,12 @@ export function createClaudeCodeStreamFunction(runClaude: RunClaude): StreamFunc
 		const stream = createAssistantMessageEventStream();
 		const turn = new ClaudeTurn(stream, model);
 
-		const configuration = configurationForReuse(model, context, toEffort(options?.reasoning));
+		const env = toClaudeEnv();
+		// An existing child must not retain stale authentication/routing after env changes.
+		const configuration = { request: configurationForReuse(model, context, toEffort(options?.reasoning)), env };
 		if (continueLiveProcess(turn, owner, options?.sessionId, configuration, context.messages, options?.signal)) return stream;
 
-		startProcess(runClaude, turn, model, context, options, owner, configuration).catch((error: unknown) => {
+		startProcess(runClaude, turn, model, context, options, owner, configuration, env).catch((error: unknown) => {
 			console.error("claude CLI turn failed:", error);
 			turn.fail(START_FAILED_MESSAGE, "error");
 		});
