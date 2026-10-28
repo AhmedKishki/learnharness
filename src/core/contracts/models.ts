@@ -73,13 +73,15 @@ export interface ModelCatalogResponse {
 	 *  are simply absent (the Keys page is the discovery surface, same
 	 *  discipline as the search engines). */
 	providers: CatalogProvider[];
+	/** Sanitized configuration diagnostic; built-in catalogs remain available. */
+	customProvidersError?: string;
 }
 
 /** One row of the providers surface. */
 export interface CatalogProvider {
 	id: string;
-	/** The env var whose presence federates this provider in. */
+	/** The gating env var; empty for subscription and file-configured routes. */
 	envVar: string;
-	/** Whether that var is currently present (env or auth file). */
+	/** Whether credentials are present (and custom references resolve). */
 	keyPresent: boolean;
 }

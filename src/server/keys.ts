@@ -53,6 +53,8 @@ import {
 } from "../core/auth-keys.ts";
 import { authStore } from "../store/auth.ts";
 import { isSubscriptionProvider, subscriptionConnected } from "../agent/subscription-connections.ts";
+import { piModels } from "../agent/models.ts";
+import { customProviderConfigured, installCustomProviderSource } from "./custom-providers.ts";
 
 // The once-per-process boot record — globalThis anchor (HMR re-imports the
 // module; the snapshot must not re-run and misread fill-gapped vars as real
@@ -201,6 +203,9 @@ export function keyValue(id: string): string | undefined {
  * (gate by what would run). Providers absent from AUTH_PROVIDER_KEYS take
  * no key at all: nothing to gate, present by definition. */
 export function providerKeyPresent(provider: string): boolean {
+	piModels(); // Synchronize hand-edited custom configuration before admission.
+	const custom = customProviderConfigured(provider);
+	if (custom !== undefined) return custom;
 	if (isSubscriptionProvider(provider)) return subscriptionConnected(provider);
 	const info = AUTH_PROVIDER_KEYS.find((p) => p.id === provider);
 	return info ? keyValue(info.envVar) !== undefined : true;
@@ -244,3 +249,4 @@ export function deleteKey(id: string): AuthKeyStatus {
 // Reflect the file into the env at first import (idempotent; the module is
 // imported by every route/handler path that touches keys).
 initAuthEnv();
+installCustomProviderSource(keyValue);
