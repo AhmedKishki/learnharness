@@ -5,9 +5,11 @@ import {
 	type Api,
 	type Model,
 	type Models,
+	type MutableModels,
 	type StreamFunction,
 } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { lazyStream } from "@earendil-works/pi-ai/api/lazy";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type ModelRole } from "../../config.ts";
 import { DEFAULT_THINKING_ORDER } from "../core/settings.ts";
@@ -49,6 +51,23 @@ export interface PiEngine {
 export type { ThinkingLevel };
 
 let collection: ReturnType<typeof createModels> | undefined;
+interface ProviderSource {
+	sync(models: MutableModels): void;
+	isCustom(id: string): boolean;
+}
+let providerSource: ProviderSource | undefined;
+
+/** Configuration IO is injected by the server; the agent never imports stores. */
+export function configureProviderSource(source: ProviderSource): void {
+	// Server module re-evaluation can replace the source while this collection
+	// survives. Retire only the previous source's routes, not built-ins.
+	if (collection && providerSource) {
+		for (const provider of collection.getProviders()) {
+			if (providerSource.isCustom(provider.id)) collection.deleteProvider(provider.id);
+		}
+	}
+	providerSource = source;
+}
 
 /** The process-wide pi-ai Models collection — EVERY builtin provider's
  *  catalog (model slots wave, 2026-09-20): engines and the picker resolve
@@ -63,6 +82,7 @@ export function piModels() {
 		collection = createModels({ identity: APP_IDENTITY });
 		for (const provider of builtinProviders()) collection.setProvider(provider);
 	}
+	providerSource?.sync(collection);
 	return collection;
 }
 
@@ -111,6 +131,9 @@ export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (
 	const level = spec.thinkingLevel
 		? clampThinkingLevel(model, spec.thinkingLevel)
 		: defaultThinkingLevel(model);
+	// A lesson's agent loop can stay alive through many tool calls. Remember
+	// only that this is a custom route, never its configuration for that run.
+	const custom = providerSource?.isCustom(spec.provider) ?? false;
 	return {
 		model,
 		level,
@@ -118,9 +141,20 @@ export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (
 		// `reasoning` (undefined = off on pi-ai's scale); the clamp above keeps
 		// the pin honest even when config or settings drift off the map.
 		streamFn: (requestModel, context, options) => {
+			const requestOptions = { ...options, reasoning: level === "off" ? undefined : level };
+			if (custom) {
+				// Revalidate before EVERY upstream model operation, including later
+				// tool-loop steps. Pi resolves auth and clamps the requested thinking
+				// against the current native model. Its in-flight operation retains
+				// its own setup; a subsequent operation uses the reloaded provider.
+				const current = piModels();
+				const currentModel = current.getModel(spec.provider, spec.id);
+				if (!currentModel) return lazyStream(requestModel, async () => { throw new Error("The selected custom model is unavailable."); });
+				return current.streamSimple(currentModel, context, requestOptions);
+			}
 			const purpose = typeof background === "function" ? background : () => background;
 			const stream = spec.provider === "chatgpt" ? chatGPTStream(purpose, lifecycle) : nativeId ? nativeSubscriptionStream(models.getProvider(nativeId)!, purpose, lifecycle) : models.streamSimple.bind(models);
-			return stream(requestModel, context, { ...options, reasoning: level === "off" ? undefined : level });
+			return stream(requestModel, context, requestOptions);
 		},
 	};
 }
