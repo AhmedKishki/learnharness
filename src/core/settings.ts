@@ -254,11 +254,16 @@ export interface CustomModelOverride {
 export interface CustomProviderSettings {
 	/** Normalized base URL (see normalizeBaseUrl). Empty/absent = not configured. */
 	baseUrl?: string;
-	/** Models discovered from the endpoint (refreshed on connect). */
+	/** Models this endpoint offers: advertised ids merged with the typed
+	 *  manual ones (rewritten on connect; a failed probe keeps the same
+	 *  endpoint's last snapshot). */
 	models?: CustomModel[];
 	/** User pins keyed by model id — pure user intent, never rewritten by
-	 *  discovery, pruned to the endpoint's live ids on connect. */
+	 *  discovery, pruned on connect to the ids that connect offers. */
 	overrides?: Record<string, CustomModelOverride>;
+	/** Model ids the user typed by hand, for an endpoint that publishes no
+	 *  usable /models list. Kept apart from the snapshot so a reconnect can
+	 *  re-merge them after discovery refreshes. */
 	manualModels?: string[];
 }
 
