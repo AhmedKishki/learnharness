@@ -8,7 +8,7 @@ import { openAICodexResponsesApi } from "@earendil-works/pi-ai/api/openai-codex-
 import { azureOpenAIResponsesApi } from "@earendil-works/pi-ai/api/azure-openai-responses.lazy";
 import { googleGenerativeAIApi } from "@earendil-works/pi-ai/api/google-generative-ai.lazy";
 import { googleVertexApi } from "@earendil-works/pi-ai/api/google-vertex.lazy";
-import { bedrockConverseStreamApi } from "@earendil-works/pi-ai/api/bedrock-converse-stream.lazy";
+import { lazyApi } from "@earendil-works/pi-ai/api/lazy";
 import { mistralConversationsApi } from "@earendil-works/pi-ai/api/mistral-conversations.lazy";
 import { piMessagesApi } from "@earendil-works/pi-ai/api/pi-messages.lazy";
 import { resolveCustomValue, type CustomProviderConfig } from "../core/custom-providers.ts";
@@ -21,7 +21,10 @@ const apis: Record<string, ProviderStreams> = {
 	"azure-openai-responses": azureOpenAIResponsesApi(),
 	"google-generative-ai": googleGenerativeAIApi(),
 	"google-vertex": googleVertexApi(),
-	"bedrock-converse-stream": bedrockConverseStreamApi(),
+	// Pi's Bedrock wrapper intentionally hides its Node-only import from
+	// bundlers. Give this server's standalone tracer a literal public import;
+	// Pi still owns both lazy forwarding and the unchanged native transport.
+	"bedrock-converse-stream": lazyApi(() => import("@earendil-works/pi-ai/api/bedrock-converse-stream")),
 	"mistral-conversations": mistralConversationsApi(),
 	"pi-messages": piMessagesApi(),
 };
