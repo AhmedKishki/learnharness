@@ -40,7 +40,7 @@ export function ClaudeCodeInstallationStatus() {
 		return () => request.current?.abort();
 	}, [refresh]);
 	return <div className="space-y-2" data-testid="claude-code-installation">
-		<ConnectionRow label="Claude Code" labelClassName="font-prose text-(length:--lh-prose-size) text-foreground" action="Check again" disabled={busy} onAction={() => void refresh()} actionTestid="claude-code-check-again">
+		<ConnectionRow label="Claude Code" labelClassName="font-prose text-(length:--lh-prose-size) text-foreground" action="Check again" actionVariant="outline" disabled={busy} onAction={() => void refresh()} actionTestid="claude-code-check-again">
 			<span role="status" className="text-xs text-muted-foreground">{busy ? "Checking…" : claudeCodeStatusLabel(status)}</span>
 		</ConnectionRow>
 		<p className="text-xs leading-relaxed text-muted-foreground">Install and authenticate in Claude Code outside LearnHarness. Authentication is not checked. Your Claude Code configuration determines billing.</p>

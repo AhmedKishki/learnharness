@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseHTML } from "linkedom";
 import { ClaudeCodeInstallationStatus, claudeCodeStatusLabel } from "../components/settings/claude-code-status.tsx";
+import { ConnectionRow } from "../components/settings/connection-controls.tsx";
 import type { ClaudeCodeStatus } from "../src/core/contracts/claude-code.ts";
 
 const dom = parseHTML("<html><body></body></html>");
@@ -33,6 +34,18 @@ test("row is informational, disclaims auth/billing readiness, and links only to 
 	assert.equal((html.match(/<button/g) ?? []).length, 1);
 	assert(!html.includes("Connect</button>"));
 	assert(!html.includes("Sign in</button>"));
+	assert.match(html, /data-variant="outline"/);
+	assert.match(html, /data-size="xs"/);
+});
+
+test("recheck matches the existing Connect button styling without restyling Manage actions", () => {
+	const row = (action: string) => renderToStaticMarkup(<ConnectionRow label="Fixture" action={action} disabled={false} onAction={() => {}} />);
+	const connect = parseHTML(row("Connect")).document.querySelector("button")!;
+	const manage = parseHTML(row("Manage")).document.querySelector("button")!;
+	const check = parseHTML(renderToStaticMarkup(<ClaudeCodeInstallationStatus />)).document.querySelector("button")!;
+	assert.equal(check.getAttribute("class"), connect.getAttribute("class"));
+	assert.equal(check.getAttribute("data-variant"), "outline");
+	assert.equal(manage.getAttribute("data-variant"), "ghost");
 });
 
 for (const [value, text] of [

@@ -109,7 +109,8 @@ export function StatsBar({
 	// otherwise "—" (never a fake $0.0000).
 	const pricedCount = turns.length - unpriced - subscription;
 	const providers = pricing?.subscriptionProviders ?? subscriptionLabels(turns.map((turn) => turn.model));
-	const costLabel = planCostLabel(pricedCount > 0 ? cost : null, providers);
+	const cliBilled = turns.some((turn) => turn.model.startsWith(`${CLAUDE_CODE_PROVIDER}:`));
+	const costLabel = planCostLabel(pricedCount > 0 ? cost : null, cliBilled ? [...providers, "CLI"] : providers);
 
 	return (
 		<div
@@ -164,7 +165,7 @@ export function StatsBar({
 								</span>
 							</div>
 							{selectedModel?.startsWith(`${CLAUDE_CODE_PROVIDER}:`) && (
-								<p>The window is reported by Claude Code’s local summary and may reflect its auto-compaction budget rather than the model’s full maximum. Unavailable windows are omitted.</p>
+								<p>Window reported by Claude Code; may be lower for auto-compaction.</p>
 							)}
 							<div className="flex justify-between gap-2">
 								<span>{subscription ? "Usage" : "Total cost"}</span>
@@ -193,7 +194,7 @@ export function StatsBar({
 												</span>
 												<span className="flex shrink-0 items-center gap-2 tabular-nums text-card-foreground">
 													<span className="text-muted-foreground">{turn.steps.length} steps</span>
-													<span>{subscriptionLabel(turn.model) ?? (c === null ? "—" : formatUsd(c))}</span>
+													<span>{turn.model.startsWith(`${CLAUDE_CODE_PROVIDER}:`) ? "CLI" : subscriptionLabel(turn.model) ?? (c === null ? "—" : formatUsd(c))}</span>
 												</span>
 											</li>
 										);
