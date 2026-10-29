@@ -191,7 +191,7 @@ export async function convertPdf(data: Uint8Array, maxPages: number): Promise<Pd
 
 /** A page's Markdown, or "" for a page with no text (the agent renders those). */
 function pageMarkdown(page: PdfPage): string {
-	return page.kind === "text" || page.kind === "scanned" ? page.markdown : "";
+	return page.kind === "text" ? page.markdown : "";
 }
 
 /** pdf_extract: Markdown of the requested pages, `--- Page N ---` headed. */

@@ -9,8 +9,6 @@ import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist/legacy/build/pdf
 
 export type PdfPage =
 	| { kind: "text"; number: number; markdown: string }
-	/** Hidden scanner text laid over a page image: its quality is unknown and its sizes are noise. */
-	| { kind: "scanned"; number: number; markdown: string }
 	| { kind: "image-only"; number: number }
 	| { kind: "empty"; number: number };
 
@@ -36,11 +34,9 @@ interface Line {
 }
 
 interface PageScan {
-	number: number;
+	page: PDFPageProxy;
 	height: number;
 	lines: Line[];
-	images: number;
-	hiddenText: boolean;
 }
 
 type Block =
@@ -48,13 +44,11 @@ type Block =
 	| { type: "item"; depth: number; x0: number; y: number; size: number; text: string }
 	| { type: "paragraph"; text: string };
 
-const BULLET = /^\s*[•●▪–—-]\s+/;
-const PRIVATE_USE = /[-]/g;
+const BULLET = /^\s*[\u2022\u25CF\u25AA\u2013\u2014\uF0B7-]\s+/;
+const PRIVATE_USE = /[\uE000-\uF8FF]/g;
 // Arabic presentation forms and Latin ligatures only: full-text NFKC would also flatten x² to x2.
-const COMPAT = /[ﬀ-ﬆﭐ-﷿ﹰ-﻿]+/g;
+const COMPAT = /[\uFB00-\uFB06\uFB50-\uFDFF\uFE70-\uFEFF]+/g;
 const MAX_HEADING_CHARS = 150;
-// Text render modes 3 and 7 draw nothing: the mark of a scanner's hidden text layer.
-const INVISIBLE_MODES = new Set([3, 7]);
 
 // Control bytes (NUL from emoji and stretchy math glyphs) carry no text; tab and newline are whitespace already.
 const CONTROL = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
@@ -128,7 +122,7 @@ function lineNumbers(glyphs: readonly Glyph[]): Set<Glyph> {
 	return dropped;
 }
 
-async function scanPage(page: PDFPageProxy, OPS: { paintImageXObject: number; setTextRenderingMode: number }): Promise<PageScan> {
+async function scanPage(page: PDFPageProxy): Promise<PageScan> {
 	const glyphs = (await page.getTextContent()).items.flatMap((item) => toGlyph(item) ?? []);
 	const margin = lineNumbers(glyphs);
 	const lines: Line[] = [];
@@ -143,23 +137,14 @@ async function scanPage(page: PDFPageProxy, OPS: { paintImageXObject: number; se
 		if (glyph.hasEOL) flush();
 	}
 	flush();
-	const ops = await page.getOperatorList();
-	let images = 0;
-	const modes = new Set<number>();
-	ops.fnArray.forEach((fn, i) => {
-		if (fn === OPS.paintImageXObject) images++;
-		if (fn === OPS.setTextRenderingMode) {
-			const mode: unknown = ops.argsArray[i]?.[0];
-			if (typeof mode === "number") modes.add(mode);
-		}
-	});
-	return {
-		number: page.pageNumber,
-		height: page.getViewport({ scale: 1 }).height,
-		lines,
-		images,
-		hiddenText: modes.size > 0 && [...modes].every((m) => INVISIBLE_MODES.has(m)),
-	};
+	return { page, height: page.getViewport({ scale: 1 }).height, lines };
+}
+
+/** Whether a page without text draws a picture. Asked only of such pages: building the operator list
+ * was two thirds of the conversion time when every page paid for it. */
+async function drawsImage(page: PDFPageProxy): Promise<boolean> {
+	const { OPS } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+	return (await page.getOperatorList()).fnArray.includes(OPS.paintImageXObject);
 }
 
 /** Running headers and footers: the same text (digits normalized) in the top or bottom 12% of at least 40% of
@@ -198,10 +183,10 @@ function titleFirst(lines: Line[], body: number): Line[] {
 	return [...lines.slice(i, j), ...lines.slice(0, i), ...lines.slice(j)];
 }
 
-function toBlocks(lines: readonly Line[], body: number, fullWidth: number, headings: boolean): Block[] {
+function toBlocks(lines: readonly Line[], body: number, fullWidth: number): Block[] {
 	// Levels by size relative to the page's body: ranking every size fails on slides, where one 72pt figure label takes level 1.
 	const levelOf = (l: Line): 0 | 1 | 2 | 3 => {
-		if (!headings || l.rotated || BULLET.test(l.text) || roundSize(l) < body + 1.95) return 0;
+		if (l.rotated || BULLET.test(l.text) || roundSize(l) < body + 1.95) return 0;
 		return l.size >= body * 1.6 ? 1 : l.size >= body * 1.3 ? 2 : 3;
 	};
 	const blocks: Block[] = [];
@@ -257,31 +242,31 @@ function toMarkdown(blocks: readonly Block[]): string {
 
 /** Convert the given pages (default: all). Headers, footers and the body size are judged across the converted pages. */
 export async function documentToMarkdown(doc: PDFDocumentProxy, pageNumbers?: readonly number[]): Promise<PdfPage[]> {
-	const { OPS } = await import("pdfjs-dist/legacy/build/pdf.mjs");
 	const numbers = pageNumbers ?? Array.from({ length: doc.numPages }, (_, i) => i + 1);
 	const pages: PageScan[] = [];
-	for (const n of numbers) pages.push(await scanPage(await doc.getPage(n), OPS));
+	for (const n of numbers) pages.push(await scanPage(await doc.getPage(n)));
 	removeChrome(pages);
-	const isScan = (p: PageScan) => p.hiddenText && p.images > 0;
-	const typed = pages.filter((p) => !isScan(p)).flatMap((p) => p.lines);
-	const docBody = bodySize(typed);
-	const bodyLengths = typed.filter((l) => !l.rotated && Math.abs(l.size - docBody) < 0.5).map((l) => l.text.length).sort((a, b) => a - b);
+	const all = pages.flatMap((p) => p.lines);
+	const docBody = bodySize(all);
+	const bodyLengths = all.filter((l) => !l.rotated && Math.abs(l.size - docBody) < 0.5).map((l) => l.text.length).sort((a, b) => a - b);
 	const fullWidth = (bodyLengths[Math.floor(bodyLengths.length * 0.75)] ?? 0) * 0.7;
-	return pages.map((p): PdfPage => {
-		if (!p.lines.length) return { kind: p.images ? "image-only" : "empty", number: p.number };
+	const out: PdfPage[] = [];
+	for (const p of pages) {
+		const number = p.page.pageNumber;
+		if (!p.lines.length) {
+			out.push({ kind: (await drawsImage(p.page)) ? "image-only" : "empty", number });
+			continue;
+		}
 		// Each slide has its own body (bullets at 24pt, credits at 8pt); the page's largest size is its title,
 		// never its body. The docBody floor keeps a paper's 8pt reference page from turning 10pt prose into headings.
 		const top = Math.max(...p.lines.map(roundSize));
 		const body = Math.max(docBody, bodySize(p.lines.filter((l) => roundSize(l) < top)));
-		const scan = isScan(p);
-		const markdown = toMarkdown(toBlocks(titleFirst(p.lines, body), body, fullWidth, !scan));
-		return { kind: scan ? "scanned" : "text", number: p.number, markdown };
-	});
+		out.push({ kind: "text", number, markdown: toMarkdown(toBlocks(titleFirst(p.lines, body), body, fullWidth)) });
+	}
+	return out;
 }
 
 /** The pages that carry text, each under a `--- Page N ---` marker (the pdf-reader's existing format). */
 export function joinPages(pages: readonly PdfPage[]): string {
-	return pages
-		.flatMap((p) => (p.kind === "text" || p.kind === "scanned" ? [`--- Page ${p.number} ---\n\n${p.markdown}`] : []))
-		.join("\n\n");
+	return pages.flatMap((p) => (p.kind === "text" ? [`--- Page ${p.number} ---\n\n${p.markdown}`] : [])).join("\n\n");
 }

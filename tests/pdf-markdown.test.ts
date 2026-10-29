@@ -20,7 +20,7 @@ async function convert(data: Uint8Array, pageNumbers?: number[]): Promise<PdfPag
 }
 
 function markdownOf(page: PdfPage | undefined): string {
-	assert.ok(page && (page.kind === "text" || page.kind === "scanned"), `expected a page with text, got ${page?.kind}`);
+	assert.ok(page?.kind === "text", `expected a page with text, got ${page?.kind}`);
 	return page.markdown;
 }
 
@@ -161,15 +161,15 @@ describe("pdf-markdown — reading order", () => {
 });
 
 describe("pdf-markdown — page kinds", () => {
-	it("tells text, hidden scanner text, picture-only and blank pages apart", async () => {
+	it("tells text, picture-only and blank pages apart; a scan's hidden text layer reads as text", async () => {
 		const out = await convert(tinyPdf([
 			{ runs: [{ text: "Typed page", x: 72, y: 700 }] },
-			{ image: true, runs: [{ text: "Scanned words", x: 72, y: 700, size: 30, invisible: true }, { text: "more scanned words", x: 72, y: 600, invisible: true }] },
+			{ image: true, runs: [{ text: "Scanned words", x: 72, y: 700, invisible: true }] },
 			{ image: true },
 			{},
 		]));
-		assert.deepEqual(out.map((p) => p.kind), ["text", "scanned", "image-only", "empty"]);
-		assert.ok(!markdownOf(out[1]).includes("#"), "scanner text sizes are noise: no headings");
+		assert.deepEqual(out.map((p) => p.kind), ["text", "text", "image-only", "empty"]);
+		assert.equal(markdownOf(out[1]), "Scanned words");
 	});
 
 	it("joinPages marks only pages with text, numbered as in the file", async () => {
