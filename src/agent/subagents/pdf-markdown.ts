@@ -56,7 +56,10 @@ const MAX_HEADING_CHARS = 150;
 // Text render modes 3 and 7 draw nothing: the mark of a scanner's hidden text layer.
 const INVISIBLE_MODES = new Set([3, 7]);
 
-const clean = (s: string) => s.replace(COMPAT, (m) => m.normalize("NFKC")).replace(PRIVATE_USE, "");
+// Control bytes (NUL from emoji and stretchy math glyphs) carry no text; tab and newline are whitespace already.
+const CONTROL = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
+
+const clean = (s: string) => s.replace(COMPAT, (m) => m.normalize("NFKC")).replace(PRIVATE_USE, "").replace(CONTROL, "");
 const roundSize = (l: Line) => Math.round(l.size * 10) / 10;
 // Join a wrapped line, undoing an end-of-line hyphen break ("intermedi-" + "ate").
 const joinWrapped = (a: string, b: string) => (/[a-z]-$/.test(a) && /^[a-z]/.test(b) ? a.slice(0, -1) + b : `${a} ${b}`);
@@ -102,7 +105,32 @@ function toLine(glyphs: Glyph[]): Line | null {
 	};
 }
 
+/** Margin line numbers (bills, legal pleadings): a right-aligned column of small integers rising down
+ * the page by 1 (by 2 or 3 where blank lines skip one), each written AFTER its line's words, which is
+ * why it glues onto the line end ("covered1") and corrupts ranges. Numbered table rows come before their
+ * labels and stay; their gap to the words is no different (both ~0.7 font sizes at the closest). Chart
+ * labels rising by 10 ("20代", "30代") are not line numbers. */
+function lineNumbers(glyphs: readonly Glyph[]): Set<Glyph> {
+	const columns = new Map<number, Glyph[]>();
+	for (const g of glyphs) {
+		if (!/^\d{1,3}$/.test(g.str.trim()) || g.rotated) continue;
+		const column = Math.round((g.x + g.width) / 4);
+		columns.set(column, [...(columns.get(column) ?? []), g]);
+	}
+	const writtenAfterItsLine = (g: Glyph) =>
+		glyphs.slice(0, glyphs.indexOf(g)).some((o) => o.str.trim() && o.x > g.x && Math.abs(o.y - g.y) <= g.size / 2);
+	const dropped = new Set<Glyph>();
+	for (const column of columns.values()) {
+		const down = [...column].sort((p, q) => q.y - p.y);
+		const rises = down.every((g, i) => i === 0 || [1, 2, 3].includes(Number(g.str) - Number(down[i - 1]!.str)));
+		if (down.length >= 5 && rises && down.every(writtenAfterItsLine)) for (const g of column) dropped.add(g);
+	}
+	return dropped;
+}
+
 async function scanPage(page: PDFPageProxy, OPS: { paintImageXObject: number; setTextRenderingMode: number }): Promise<PageScan> {
+	const glyphs = (await page.getTextContent()).items.flatMap((item) => toGlyph(item) ?? []);
+	const margin = lineNumbers(glyphs);
 	const lines: Line[] = [];
 	let current: Glyph[] = [];
 	const flush = () => {
@@ -110,10 +138,8 @@ async function scanPage(page: PDFPageProxy, OPS: { paintImageXObject: number; se
 		if (line) lines.push(line);
 		current = [];
 	};
-	for (const item of (await page.getTextContent()).items) {
-		const glyph = toGlyph(item);
-		if (!glyph) continue;
-		current.push(glyph);
+	for (const glyph of glyphs) {
+		if (!margin.has(glyph)) current.push(glyph);
 		if (glyph.hasEOL) flush();
 	}
 	flush();
@@ -136,14 +162,15 @@ async function scanPage(page: PDFPageProxy, OPS: { paintImageXObject: number; se
 	};
 }
 
-/** Running headers and footers: the same text (digits normalized) in the top or bottom 12% of at least half the pages. */
+/** Running headers and footers: the same text (digits normalized) in the top or bottom 12% of at least 40% of
+ * the pages. Not half: a textbook's "Access for free at openstax.org" sits on 377 of 755 pages. */
 function removeChrome(pages: PageScan[]): void {
 	const key = (l: Line) => l.text.replace(/\d+/g, "#");
 	const seen = new Map<string, number>();
 	for (const p of pages)
 		for (const k of new Set(p.lines.filter((l) => l.y > p.height * 0.88 || l.y < p.height * 0.12).map(key)))
 			seen.set(k, (seen.get(k) ?? 0) + 1);
-	const chrome = new Set([...seen].filter(([, n]) => n >= Math.max(2, pages.length / 2)).map(([k]) => k));
+	const chrome = new Set([...seen].filter(([, n]) => n >= Math.max(2, pages.length * 0.4)).map(([k]) => k));
 	for (const p of pages) p.lines = p.lines.filter((l) => !chrome.has(key(l)));
 }
 

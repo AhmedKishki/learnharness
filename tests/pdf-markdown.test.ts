@@ -73,6 +73,36 @@ describe("pdf-markdown — structure", () => {
 		const [page] = await convert(tinyPdf([{ runs: [{ text: "# of pixels used", x: 72, y: 700 }] }]));
 		assert.equal(markdownOf(page), "\\# of pixels used");
 	});
+
+	it("drops margin line numbers written after their lines, but keeps numbered rows written before their labels", async () => {
+		const bill = ["covered platform means", "a social media service", "ages 0 to 5, 6 to 9", "or an online platform", "that connects to the internet"];
+		const [billPage, tablePage] = await convert(tinyPdf([
+			{ runs: bill.flatMap((text, i) => [{ text, x: 150, y: 700 - i * 30 }, { text: String(i + 1), x: 100, y: 700 - i * 30 }]) },
+			{ runs: ["Bank credit", "Securities", "Loans", "Real estate", "Deposits"].flatMap((label, i) => [{ text: String(i + 1), x: 72, y: 700 - i * 30 }, { text: label, x: 86, y: 700 - i * 30 }]) },
+		]));
+		assert.equal(markdownOf(billPage), bill.join("\n\n"));
+		assert.match(markdownOf(tablePage), /^1 Bank credit\n\n2 Securities\n\n3 Loans/);
+	});
+
+	it("keeps chart labels whose numbers rise by 10, even when written after their unit", async () => {
+		const [page] = await convert(tinyPdf([{
+			runs: [20, 30, 40, 50, 60].flatMap((age, i) => [{ text: "s", x: 120, y: 700 - i * 30 }, { text: String(age), x: 100, y: 700 - i * 30 }]),
+		}]));
+		assert.match(markdownOf(page), /20/);
+		assert.match(markdownOf(page), /60/);
+	});
+
+	it("drops a footer that repeats on 40% of the pages", async () => {
+		const out = await convert(tinyPdf(["One", "Two", "Three", "Four", "Five"].map((word, i) => ({
+			runs: [{ text: `Page ${word} text.`, x: 72, y: 600 }, ...(i < 2 ? [{ text: "Access for free at openstax.org", x: 72, y: 30, size: 8 }] : [])],
+		}))));
+		assert.deepEqual(out.map(markdownOf), ["Page One text.", "Page Two text.", "Page Three text.", "Page Four text.", "Page Five text."]);
+	});
+
+	it("strips control characters that some fonts emit for math glyphs", async () => {
+		const [page] = await convert(tinyPdf([{ runs: [{ text: "x ~ y", x: 72, y: 700 }] }]));
+		assert.equal(markdownOf(page), "x y");
+	});
 });
 
 describe("pdf-markdown — slides", () => {
