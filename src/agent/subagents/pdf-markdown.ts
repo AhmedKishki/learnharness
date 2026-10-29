@@ -1,0 +1,260 @@
+import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
+
+/**
+ * PDF → Markdown by rule, no model: pdfjs text positions and font sizes become headings,
+ * paragraphs and lists. Serves the notes import (whose chunker then splits the Markdown) and
+ * the pdf-reader tools. Prototyped against a 14-PDF benchmark (papers, forms, slides, scans,
+ * right-to-left text); each rule below names the failure it fixes.
+ */
+
+export type PdfPage =
+	| { kind: "text"; number: number; markdown: string }
+	/** Hidden scanner text laid over a page image: its quality is unknown and its sizes are noise. */
+	| { kind: "scanned"; number: number; markdown: string }
+	| { kind: "image-only"; number: number }
+	| { kind: "empty"; number: number };
+
+type TextContentItem = Awaited<ReturnType<PDFPageProxy["getTextContent"]>>["items"][number];
+
+interface Glyph {
+	str: string;
+	rtl: boolean;
+	x: number;
+	y: number;
+	size: number;
+	width: number;
+	rotated: boolean;
+	hasEOL: boolean;
+}
+
+interface Line {
+	text: string;
+	rotated: boolean;
+	size: number;
+	y: number;
+	x0: number;
+}
+
+interface PageScan {
+	number: number;
+	height: number;
+	lines: Line[];
+	images: number;
+	hiddenText: boolean;
+}
+
+type Block =
+	| { type: "heading"; level: 1 | 2 | 3; text: string }
+	| { type: "item"; depth: number; x0: number; y: number; size: number; text: string }
+	| { type: "paragraph"; text: string };
+
+const BULLET = /^\s*[•●▪–—-]\s+/;
+const PRIVATE_USE = /[-]/g;
+// Arabic presentation forms and Latin ligatures only: full-text NFKC would also flatten x² to x2.
+const COMPAT = /[ﬀ-ﬆﭐ-﷿ﹰ-﻿]+/g;
+const MAX_HEADING_CHARS = 150;
+// Text render modes 3 and 7 draw nothing: the mark of a scanner's hidden text layer.
+const INVISIBLE_MODES = new Set([3, 7]);
+
+const clean = (s: string) => s.replace(COMPAT, (m) => m.normalize("NFKC")).replace(PRIVATE_USE, "");
+const roundSize = (l: Line) => Math.round(l.size * 10) / 10;
+// Join a wrapped line, undoing an end-of-line hyphen break ("intermedi-" + "ate").
+const joinWrapped = (a: string, b: string) => (/[a-z]-$/.test(a) && /^[a-z]/.test(b) ? a.slice(0, -1) + b : `${a} ${b}`);
+
+function toGlyph(item: TextContentItem): Glyph | null {
+	if (!("str" in item)) return null;
+	const [a, b, c, d, x, y] = item.transform.map(Number);
+	return {
+		str: item.str,
+		rtl: item.dir === "rtl",
+		x: x ?? 0,
+		y: y ?? 0,
+		size: Math.hypot(a ?? 0, b ?? 0),
+		width: item.width,
+		rotated: Math.abs(b ?? 0) > 0.01 || Math.abs(c ?? 0) > 0.01,
+		hasEOL: item.hasEOL,
+	};
+}
+
+function toLine(glyphs: Glyph[]): Line | null {
+	const visible = glyphs.filter((g) => g.str.trim());
+	const first = visible[0];
+	if (!first) return null;
+	const rtl = glyphs.filter((g) => g.str && g.rtl).length > glyphs.filter((g) => g.str).length / 2;
+	// pdfjs streams right-to-left words in visual order: read them back right to left.
+	const ordered = rtl ? [...glyphs].sort((p, q) => q.x - p.x) : glyphs;
+	let joined = "";
+	let prevEnd: number | null = null;
+	for (const g of ordered) {
+		// Separate boxes on a form touch in the stream with no space item: add one on a visible gap.
+		if (!rtl && prevEnd !== null && g.str && !/\s$/.test(joined) && !/^\s/.test(g.str) && g.x - prevEnd > (g.size || 1) * 0.25) joined += " ";
+		joined += g.str;
+		if (g.str) prevEnd = g.x + g.width;
+	}
+	const text = clean(joined).replace(/\s+/g, " ").trim();
+	if (!text) return null;
+	return {
+		text,
+		rotated: visible.some((g) => g.rotated),
+		size: Math.max(...visible.map((g) => g.size)),
+		y: first.y,
+		x0: Math.min(...visible.map((g) => g.x)),
+	};
+}
+
+async function scanPage(page: PDFPageProxy, OPS: { paintImageXObject: number; setTextRenderingMode: number }): Promise<PageScan> {
+	const lines: Line[] = [];
+	let current: Glyph[] = [];
+	const flush = () => {
+		const line = toLine(current);
+		if (line) lines.push(line);
+		current = [];
+	};
+	for (const item of (await page.getTextContent()).items) {
+		const glyph = toGlyph(item);
+		if (!glyph) continue;
+		current.push(glyph);
+		if (glyph.hasEOL) flush();
+	}
+	flush();
+	const ops = await page.getOperatorList();
+	let images = 0;
+	const modes = new Set<number>();
+	ops.fnArray.forEach((fn, i) => {
+		if (fn === OPS.paintImageXObject) images++;
+		if (fn === OPS.setTextRenderingMode) {
+			const mode: unknown = ops.argsArray[i]?.[0];
+			if (typeof mode === "number") modes.add(mode);
+		}
+	});
+	return {
+		number: page.pageNumber,
+		height: page.getViewport({ scale: 1 }).height,
+		lines,
+		images,
+		hiddenText: modes.size > 0 && [...modes].every((m) => INVISIBLE_MODES.has(m)),
+	};
+}
+
+/** Running headers and footers: the same text (digits normalized) in the top or bottom 12% of at least half the pages. */
+function removeChrome(pages: PageScan[]): void {
+	const key = (l: Line) => l.text.replace(/\d+/g, "#");
+	const seen = new Map<string, number>();
+	for (const p of pages)
+		for (const k of new Set(p.lines.filter((l) => l.y > p.height * 0.88 || l.y < p.height * 0.12).map(key)))
+			seen.set(k, (seen.get(k) ?? 0) + 1);
+	const chrome = new Set([...seen].filter(([, n]) => n >= Math.max(2, pages.length / 2)).map(([k]) => k));
+	for (const p of pages) p.lines = p.lines.filter((l) => !chrome.has(key(l)));
+}
+
+/** Body size: the whole-point size covering the most characters. Whole points, because justified
+ * text jitters between 9.8 and 10.2pt; sideways text (arXiv margin stamps) never counts. */
+function bodySize(lines: readonly Line[]): number {
+	const chars = new Map<number, number>();
+	for (const l of lines) if (!l.rotated) chars.set(Math.round(l.size), (chars.get(Math.round(l.size)) ?? 0) + l.text.length);
+	let best = 0;
+	let most = -1;
+	for (const [size, n] of chars) if (n > most) [best, most] = [size, n];
+	return best;
+}
+
+/** Slide apps write text boxes in z-order (Keynote writes the title last), but stream order is right
+ * for papers, whose columns and author grids a top-to-bottom sort scrambles. So only a title that sits
+ * clearly above everything else, plus its wrapped lines, moves back to the front. */
+function titleFirst(lines: Line[], body: number): Line[] {
+	const [top, next] = lines.filter((l) => !l.rotated).sort((p, q) => q.y - p.y);
+	if (!top || !next) return lines;
+	const i = lines.indexOf(top);
+	if (i <= 0 || top.size < body + 1.95 || top.y - next.y < top.size * 0.8) return lines;
+	let j = i + 1;
+	while (j < lines.length && Math.abs(lines[j]!.size - top.size) < 0.5 && lines[j - 1]!.y - lines[j]!.y < top.size * 1.8) j++;
+	return [...lines.slice(i, j), ...lines.slice(0, i), ...lines.slice(j)];
+}
+
+function toBlocks(lines: readonly Line[], body: number, fullWidth: number, headings: boolean): Block[] {
+	// Levels by size relative to the page's body: ranking every size fails on slides, where one 72pt figure label takes level 1.
+	const levelOf = (l: Line): 0 | 1 | 2 | 3 => {
+		if (!headings || l.rotated || BULLET.test(l.text) || roundSize(l) < body + 1.95) return 0;
+		return l.size >= body * 1.6 ? 1 : l.size >= body * 1.3 ? 2 : 3;
+	};
+	const blocks: Block[] = [];
+	const listXs: number[] = []; // x of each open list depth
+	let prev: Line | null = null;
+	for (const l of lines) {
+		const level = levelOf(l);
+		const gap = prev !== null && prev.y - l.y > l.size * 1.8;
+		const last = blocks.at(-1);
+		const indent = l.size * 0.3;
+		const bullet = BULLET.test(l.text);
+		if (last?.type === "item" && !gap && !bullet && l.x0 > last.x0 + indent && Math.abs(l.size - last.size) < 0.5) {
+			// Hanging indent: the wrapped part of a bullet starts right of its bullet glyph.
+			last.text = joinWrapped(last.text, l.text);
+		} else if (level) {
+			if (last?.type === "heading" && last.level === level && !gap) last.text += ` ${l.text}`;
+			else blocks.push({ type: "heading", level, text: l.text });
+		} else if (bullet) {
+			// A bullet higher up the page than the last one starts a new side-by-side list column.
+			const lastItem = blocks.findLast((b) => b.type === "item");
+			if (lastItem && l.y > lastItem.y + indent) listXs.length = 0;
+			while (listXs.length && l.x0 < listXs.at(-1)! - indent) listXs.pop();
+			if (!listXs.length || l.x0 > listXs.at(-1)! + indent) listXs.push(l.x0);
+			blocks.push({ type: "item", depth: listXs.length - 1, x0: l.x0, y: l.y, size: l.size, text: l.text.replace(BULLET, "") });
+		} else if (prev && (last?.type === "paragraph" || last?.type === "item") && !gap && (prev.text.length >= fullWidth || /[a-z]-$/.test(prev.text))) {
+			// Wrapped prose runs near full width; table rows and form labels are short and stay apart.
+			last.text = joinWrapped(last.text, l.text);
+		} else {
+			blocks.push({ type: "paragraph", text: l.text });
+		}
+		prev = l;
+	}
+	return blocks;
+}
+
+function toMarkdown(blocks: readonly Block[]): string {
+	// Body text that starts with "#" ("# of pixels") must not read as a heading.
+	const plain = (s: string) => s.replace(/^#/, "\\#");
+	return blocks
+		.map((b, i) => {
+			switch (b.type) {
+				case "heading":
+					return b.text.length <= MAX_HEADING_CHARS ? `${"#".repeat(b.level)} ${b.text}` : plain(b.text);
+				case "item":
+					return `${"  ".repeat(b.depth)}- ${plain(b.text)}${blocks[i + 1]?.type === "item" ? "\n" : ""}`;
+				case "paragraph":
+					return plain(b.text);
+			}
+		})
+		.join("\n\n")
+		.replace(/\n\n\n/g, "\n");
+}
+
+/** Convert the given pages (default: all). Headers, footers and the body size are judged across the converted pages. */
+export async function documentToMarkdown(doc: PDFDocumentProxy, pageNumbers?: readonly number[]): Promise<PdfPage[]> {
+	const { OPS } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+	const numbers = pageNumbers ?? Array.from({ length: doc.numPages }, (_, i) => i + 1);
+	const pages: PageScan[] = [];
+	for (const n of numbers) pages.push(await scanPage(await doc.getPage(n), OPS));
+	removeChrome(pages);
+	const isScan = (p: PageScan) => p.hiddenText && p.images > 0;
+	const typed = pages.filter((p) => !isScan(p)).flatMap((p) => p.lines);
+	const docBody = bodySize(typed);
+	const bodyLengths = typed.filter((l) => !l.rotated && Math.abs(l.size - docBody) < 0.5).map((l) => l.text.length).sort((a, b) => a - b);
+	const fullWidth = (bodyLengths[Math.floor(bodyLengths.length * 0.75)] ?? 0) * 0.7;
+	return pages.map((p): PdfPage => {
+		if (!p.lines.length) return { kind: p.images ? "image-only" : "empty", number: p.number };
+		// Each slide has its own body (bullets at 24pt, credits at 8pt); the page's largest size is its title,
+		// never its body. The docBody floor keeps a paper's 8pt reference page from turning 10pt prose into headings.
+		const top = Math.max(...p.lines.map(roundSize));
+		const body = Math.max(docBody, bodySize(p.lines.filter((l) => roundSize(l) < top)));
+		const scan = isScan(p);
+		const markdown = toMarkdown(toBlocks(titleFirst(p.lines, body), body, fullWidth, !scan));
+		return { kind: scan ? "scanned" : "text", number: p.number, markdown };
+	});
+}
+
+/** The pages that carry text, each under a `--- Page N ---` marker (the pdf-reader's existing format). */
+export function joinPages(pages: readonly PdfPage[]): string {
+	return pages
+		.flatMap((p) => (p.kind === "text" || p.kind === "scanned" ? [`--- Page ${p.number} ---\n\n${p.markdown}`] : []))
+		.join("\n\n");
+}
