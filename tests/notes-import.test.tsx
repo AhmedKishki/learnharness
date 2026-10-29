@@ -6,7 +6,7 @@ import { afterEach, it } from "node:test";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseHTML } from "linkedom";
-import { NotesImportErrors, NotesImportNotices, parseNotesImportResults, postNotesImport, useNotesImport, type NotesImportResult } from "../components/notes-import.tsx";
+import { MAX_IMPORT_BYTES, NotesImportErrors, NotesImportNotices, parseNotesImportResults, postNotesImport, useNotesImport, type NotesImportResult } from "../components/notes-import.tsx";
 
 // Real hook/React state, isolated DOM and wholly stubbed import transport.
 const dom = parseHTML("<html><body></body></html>");
@@ -221,4 +221,24 @@ it("notices render as muted status lines, not alerts", () => {
 	assert.match(html, /role="status"/);
 	assert.match(html, /text-muted-foreground/);
 	assert.doesNotMatch(html, /role="alert"|text-red/);
+});
+
+it("a pick over 25 MB in total is refused before upload, one file or several; a smaller pick still goes up", async () => {
+	const half = new Uint8Array(MAX_IMPORT_BYTES / 2 + 1);
+	const sent: string[][] = [];
+	globalThis.fetch = async (_url, init) => {
+		const form = init?.body;
+		assert.ok(form instanceof FormData);
+		sent.push(form.getAll("files").map((f) => (f instanceof File ? f.name : "")));
+		return Response.json({ results: [{ ...completed(), filePath: "a.pdf" }] });
+	};
+	await mount();
+	await submit([new File([new Uint8Array(MAX_IMPORT_BYTES + 1)], "textbook.pdf")]);
+	await submit([new File([half], "a.pdf"), new File([half], "b.pdf")]);
+	assert.deepEqual(sent, [], "nothing over the cap leaves the browser");
+	assert.deepEqual(current.errors, ["a.pdf: Too big. Max 25 MB.", "b.pdf: Too big. Max 25 MB."]);
+	assert.equal(starts, 0, "a refused pick starts no import");
+	await submit([new File([half], "a.pdf")]);
+	assert.deepEqual(sent, [["a.pdf"]]);
+	assert.deepEqual(current.errors, []);
 });

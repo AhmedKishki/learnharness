@@ -53,6 +53,11 @@ export async function postNotesImport(files: readonly File[]): Promise<NotesImpo
 	return parseNotesImportResults(body, files);
 }
 
+/** One pick goes up as one request: a bigger pick is refused before upload.
+ * The server's request buffer (next.config.ts proxyClientMaxBodySize)
+ * leaves room for multipart overhead. */
+export const MAX_IMPORT_BYTES = 25 * 1024 * 1024;
+
 /** Only error text survives a request; selected Files stay request-local. */
 export function useNotesImport(callbacks: { onStart?: () => void; onFinish?: () => void } = {}) {
 	const [errors, setErrors] = useState<string[]>([]);
@@ -61,6 +66,11 @@ export function useNotesImport(callbacks: { onStart?: () => void; onFinish?: () 
 	const pending = useRef(false);
 	const submit = async (files: File[]) => {
 		if (pending.current || files.length === 0) return;
+		if (files.reduce((total, file) => total + file.size, 0) > MAX_IMPORT_BYTES) {
+			setNotices([]);
+			setErrors(files.map((file) => `${file.name}: Too big. Max 25 MB.`));
+			return;
+		}
 		pending.current = true;
 		setImporting(true);
 		setErrors([]);
