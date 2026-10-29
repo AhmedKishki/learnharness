@@ -828,6 +828,15 @@ export function endsInDismissal(messages: readonly LhMessage[]): boolean {
 	return last !== undefined && isDismissedResult(last);
 }
 
+/** The recovery click authorizes its immediate replacement turn, not an
+ * automatic restart if only the write-ahead error results survived. No new
+ * stored latch: explicit input or replacement output changes this tail. */
+export function endsInQuestionRecovery(messages: readonly LhMessage[]): boolean {
+	const last = messages[messages.length - 1];
+	return last?.role === "toolResult" && last.isError &&
+		(last.details as { questionRecovery?: unknown } | null)?.questionRecovery === true;
+}
+
 export type RequestCause = "foreground" | "background";
 export type ReconstructedCause = RequestCause | "ambiguous";
 export type NativeInputCause = "learner" | "automatic" | "neutral" | "unrecognizable";
@@ -902,7 +911,7 @@ export function needsContinuation(messages: readonly LhMessage[]): boolean {
 	// answer = the reaction is owed. One law with the pump's pause
 	// (endsInDismissal reads the same last result), so continuation,
 	// delivery-holding, and the pause can never disagree.
-	if (isDismissedResult(messages[messages.length - 1]!)) {
+	if (isDismissedResult(messages[messages.length - 1]!) || endsInQuestionRecovery(messages)) {
 		return false;
 	}
 	const owner = messages[start - 1];

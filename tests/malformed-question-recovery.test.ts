@@ -22,7 +22,7 @@ const { handleChatRequest } = await import("../src/server/chat-handler.ts");
 const { runningTurn } = await import("../src/server/turn-runs.ts");
 const { chatStore } = await import("../src/store/chats.ts");
 const { SessionModel } = await import("../components/session-core.ts");
-const { pendingQuestionOf, danglingQuestionOf, hasUnresolvedQuestion, malformedQuestionsOf, newUserMessage, needsContinuation, nativeInputCause } = await import("../src/core/native-messages.ts");
+const { pendingQuestionOf, danglingQuestionOf, hasUnresolvedQuestion, malformedQuestionsOf, newUserMessage, newAnswerResult, needsContinuation, nativeInputCause } = await import("../src/core/native-messages.ts");
 const { findPendingToolCall } = await import("../src/core/pending.ts");
 const { projectView } = await import("../src/core/view.ts");
 const { parseQuestionInput } = await import("../src/core/tool-parts.ts");
@@ -173,6 +173,43 @@ test("malformed siblings share one recovery turn; valid siblings must be answere
 	const saved = chatStore.getChat(id)!.messages;
 	assert.equal(saved.filter(m => m.role === "toolResult" && m.isError).length, 2);
 	assert.equal(pendingQuestionOf(saved)?.toolCallId, "replacement");
+});
+
+test("interrupted recovery write-ahead stays paused on reopen until explicit input", async () => {
+	const before = [newUserMessage("fixture"), assistant()];
+	const id = configured(before);
+	// The POST durably records these results before starting the replacement.
+	// Model a server stop at exactly that boundary: no replacement output.
+	const checkpoint = [...before, ...inputAppends({ messages: before }, recover())];
+	chatStore.saveMessages(id, checkpoint);
+	const reopened = chatStore.getChat(id)!.messages;
+	let posts = 0;
+	const model = new SessionModel({ chatId: id, initialMessages: reopened, fetch: async () => {
+		posts++;
+		return new Response("Unexpected automatic request", { status: 500 });
+	} });
+	await model.continueIfOwed(reopened);
+	assert.equal(posts, 0, "the original click did not authorize a restart on reopen");
+	assert.equal(needsContinuation(reopened), false);
+	assert.equal(pendingQuestionOf(reopened), null);
+	assert.equal(malformedQuestionsOf(reopened).length, 0, "resolved calls are not offered again as stale retries");
+	const { engine, histories } = scripted([replacement]);
+	assert.equal((await turn(id, { type: "text", text: "Please continue with a new question" }, engine)).status, 200);
+	assert.equal(histories.length, 1);
+	assert.deepEqual(chatStore.getChat(id)!.messages.slice(0, reopened.length), reopened);
+	assert.equal(pendingQuestionOf(chatStore.getChat(id)!.messages)?.toolCallId, "replacement");
+});
+
+test("ordinary answer and validation/length error result batches still owe continuation", () => {
+	const answer = newAnswerResult("bad", "quiz", { kind: "quiz", questionText: valid.question, dontKnow: true, answers: [], answeredAt: "fixture" });
+	assert.equal(needsContinuation([assistant(valid), answer]), true);
+	for (const stopReason of ["toolUse", "length"]) {
+		const owner = assistant(valid, stopReason);
+		const recovery = questionRecoveryAppends([assistant()], recover())[0]!;
+		if (recovery.role !== "toolResult") assert.fail("expected a tool result");
+		const validation = { ...recovery, details: { tool: "quiz", problems: ["Invalid arguments"] } };
+		assert.equal(needsContinuation([owner, validation]), true);
+	}
 });
 
 test("exact occurrence, current authority, and recoverable status are checked before writes or calls", async () => {
