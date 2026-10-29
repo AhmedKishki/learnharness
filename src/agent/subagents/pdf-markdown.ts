@@ -55,10 +55,28 @@ const CONTROL = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
 
 const clean = (s: string) => s.replace(COMPAT, (m) => m.normalize("NFKC")).replace(PRIVATE_USE, "").replace(CONTROL, "");
 const roundSize = (l: Line) => Math.round(l.size * 10) / 10;
-// Join a wrapped line, undoing an end-of-line hyphen break ("intermedi-" + "ate").
-// Any lowercase letter counts, so French "pré-" + "sente" rejoins too.
+// Any lowercase letter counts as a hyphen break, so French "pré-" + "sente" rejoins too.
 const HYPHEN_BREAK = /\p{Ll}-$/u;
-const joinWrapped = (a: string, b: string) => (HYPHEN_BREAK.test(a) && /^\p{Ll}/u.test(b) ? a.slice(0, -1) + b : `${a} ${b}`);
+type Join = (a: string, b: string) => string;
+
+/** Join a wrapped line, undoing an end-of-line hyphen break ("intermedi-" + "ate"). The document is the
+ * dictionary for compounds: a break at a word's own hyphen keeps it when the text writes that compound
+ * hyphenated mid-line more often than closed ("cognitive-" + "behavioral" stays "cognitive-behavioral"). */
+function joiner(lines: readonly Line[]): Join {
+	const hyphenated = new Map<string, number>();
+	const closed = new Map<string, number>();
+	for (const { text } of lines) {
+		for (const w of text.toLowerCase().match(/\p{L}+-\p{L}+/gu) ?? []) hyphenated.set(w, (hyphenated.get(w) ?? 0) + 1);
+		for (const w of text.toLowerCase().match(/\p{L}+/gu) ?? []) closed.set(w, (closed.get(w) ?? 0) + 1);
+	}
+	return (a, b) => {
+		if (!HYPHEN_BREAK.test(a) || !/^\p{Ll}/u.test(b)) return `${a} ${b}`;
+		const left = a.match(/\p{L}+-$/u)?.[0].slice(0, -1).toLowerCase() ?? "";
+		const right = b.match(/^\p{L}+/u)?.[0].toLowerCase() ?? "";
+		const compound = (hyphenated.get(`${left}-${right}`) ?? 0) > (closed.get(left + right) ?? 0);
+		return compound ? a + b : a.slice(0, -1) + b;
+	};
+}
 // A heading is mostly letters; figure labels ("∑=") and chart or zone digits ("2 2/3 43") are not.
 const mostlyLetters = (s: string) => (s.match(/\p{L}/gu) ?? []).length >= s.replace(/\s/g, "").length / 2;
 
@@ -237,7 +255,7 @@ function titleFirst(lines: Line[], body: number): Line[] {
 	return [...lines.slice(i, j), ...lines.slice(0, i), ...lines.slice(j)];
 }
 
-function toBlocks(lines: readonly Line[], body: number, fullWidth: number): Block[] {
+function toBlocks(lines: readonly Line[], body: number, fullWidth: number, joinWrapped: Join): Block[] {
 	// Levels by size relative to the page's body: ranking every size fails on slides, where one 72pt figure label takes level 1.
 	const levelOf = (l: Line): 0 | 1 | 2 | 3 => {
 		if (l.rotated || BULLET.test(l.text) || roundSize(l) < body + 1.95 || !mostlyLetters(l.text)) return 0;
@@ -304,6 +322,7 @@ export async function documentToMarkdown(doc: PDFDocumentProxy, pageNumbers?: re
 	const docBody = bodySize(all);
 	const bodyLengths = all.filter((l) => !l.rotated && Math.abs(l.size - docBody) < 0.5).map((l) => l.text.length).sort((a, b) => a - b);
 	const fullWidth = (bodyLengths[Math.floor(bodyLengths.length * 0.75)] ?? 0) * 0.7;
+	const join = joiner(all);
 	const out: PdfPage[] = [];
 	for (const p of pages) {
 		const number = p.page.pageNumber;
@@ -315,7 +334,7 @@ export async function documentToMarkdown(doc: PDFDocumentProxy, pageNumbers?: re
 		// never its body. The docBody floor keeps a paper's 8pt reference page from turning 10pt prose into headings.
 		const top = Math.max(...p.lines.map(roundSize));
 		const body = Math.max(docBody, bodySize(p.lines.filter((l) => roundSize(l) < top)));
-		out.push({ kind: "text", number, markdown: toMarkdown(toBlocks(titleFirst(p.lines, body), body, fullWidth)) });
+		out.push({ kind: "text", number, markdown: toMarkdown(toBlocks(titleFirst(p.lines, body), body, fullWidth, join)) });
 	}
 	return out;
 }

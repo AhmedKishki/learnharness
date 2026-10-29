@@ -43,6 +43,16 @@ describe("pdf-markdown — structure", () => {
 		assert.equal(markdownOf(page), `# Photosynthesis\n\n${LONG_A.slice(0, -1)}${LONG_B} and starch for storage.`);
 	});
 
+	it("keeps a compound's own hyphen at a line break when the document writes it hyphenated elsewhere", async () => {
+		const [page] = await convert(tinyPdf([{
+			runs: [
+				...stack(["Clinics often use cognitive-behavioral therapy for anxiety and for related disorders today.", "Many patients first try a short course of guided cognitive-", "behavioral therapy with a trained counselor."], { y: 700 }),
+			],
+		}]));
+		assert.match(markdownOf(page), /guided cognitive-behavioral therapy/);
+		assert.doesNotMatch(markdownOf(page), /cognitivebehavioral/);
+	});
+
 	it("keeps short rows apart: table rows and form labels are not wrapped prose", async () => {
 		const [page] = await convert(tinyPdf([{
 			runs: [
