@@ -43,6 +43,11 @@ describe("pdf-markdown — structure", () => {
 		assert.equal(markdownOf(page), `# Photosynthesis\n\n${LONG_A.slice(0, -1)}${LONG_B} and starch for storage.`);
 	});
 
+	it("joins a link broken after its slash without a space", async () => {
+		const [page] = await convert(tinyPdf([{ runs: stack(["Fill in the short survey before the end of the week at https://forms.gle/", "zEwAbgswCVXtTnrB8 to help us."], { y: 700 }) }]));
+		assert.match(markdownOf(page), /https:\/\/forms\.gle\/zEwAbgswCVXtTnrB8 to help us\./);
+	});
+
 	it("keeps a compound's own hyphen at a line break when the document writes it hyphenated elsewhere", async () => {
 		const [page] = await convert(tinyPdf([{
 			runs: [

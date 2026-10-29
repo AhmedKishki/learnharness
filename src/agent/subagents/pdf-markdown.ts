@@ -70,6 +70,8 @@ function joiner(lines: readonly Line[]): Join {
 		for (const w of text.toLowerCase().match(/\p{L}+/gu) ?? []) closed.set(w, (closed.get(w) ?? 0) + 1);
 	}
 	return (a, b) => {
+		// A link or "and/or" broken after its slash continues without a space.
+		if (/\S\/$/.test(a)) return a + b;
 		if (!HYPHEN_BREAK.test(a) || !/^\p{Ll}/u.test(b)) return `${a} ${b}`;
 		const left = a.match(/\p{L}+-$/u)?.[0].slice(0, -1).toLowerCase() ?? "";
 		const right = b.match(/^\p{L}+/u)?.[0].toLowerCase() ?? "";
