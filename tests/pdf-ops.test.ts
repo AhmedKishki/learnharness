@@ -5,9 +5,12 @@
  * pdf-reader loop tests via the headlessOverride fake.
  */
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import { parsePageSpec, pdfExtract, pdfInfo, pdfProbe, pdfSearch } from "../src/agent/subagents/pdf-ops.ts";
+import { tinyPdf } from "./helpers/tiny-pdf.ts";
 
 const FIXTURE = path.join(import.meta.dirname, "fixtures", "sample-3page.pdf");
 
@@ -49,6 +52,25 @@ describe("pdf-ops — the pdfjs text layer", () => {
 		assert.equal(none.hits.length, 0);
 		// invalid regex throws the skill's error shape
 		await assert.rejects(() => pdfSearch(FIXTURE, "([unclosed"), /Invalid regex/);
+	});
+
+	it("pdfExtract and pdfSearch see lines and separate words, not one glued string per page", async () => {
+		const file = path.join(os.tmpdir(), `pdf-ops-lines-${process.pid}.pdf`);
+		fs.writeFileSync(file, tinyPdf([{
+			runs: [
+				{ text: "Week 3 lecture", x: 72, y: 700, size: 20 },
+				{ text: "Plants make sugar.", x: 72, y: 660 },
+				{ text: "Animals eat plants.", x: 72, y: 600 },
+			],
+		}]));
+		try {
+			assert.equal(await pdfExtract(file, "1"), "--- Page 1 ---\n# Week 3 lecture\n\nPlants make sugar.\n\nAnimals eat plants.");
+			const { hits } = await pdfSearch(file, "Animals", { literal: true, contextLines: 0 });
+			assert.equal(hits.length, 1);
+			assert.equal(hits[0]!.context, ">>> Animals eat plants.");
+		} finally {
+			fs.rmSync(file, { force: true });
+		}
 	});
 
 	it("pdfProbe accepts the fixture and rejects garbage", async () => {
