@@ -162,7 +162,9 @@ export function resolveKeyStatuses(
 			id,
 			info: AUTH_KEYS.find((k) => k.id === id) ?? null,
 			present: live !== undefined,
-			masked: live !== undefined ? `${maskKey(live)} (${live.trim().length} chars)` : null,
+			// Custom keys may be one character: even a masked suffix can expose
+			// the entire credential. Preserve inventory, return no key characters.
+			masked: live !== undefined ? id === CUSTOM_PROVIDER.envVar ? "••••" : `${maskKey(live)} (${live.trim().length} chars)` : null,
 			source: isRealEnv ? "env" : live !== undefined ? "file" : "none",
 			shadowedByEnv: isRealEnv && fileValue !== undefined && envValue !== fileValue,
 		});

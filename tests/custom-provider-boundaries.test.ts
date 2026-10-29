@@ -52,6 +52,32 @@ test("new keys have no arbitrary minimum; the exact probed key is stored", async
 	assert.equal(keys.keyValue(CUSTOM_PROVIDER.envVar), "k");
 	const body = await get().text(); assert.ok(!body.includes("Bearer"));
 });
+test("actual GET /api/keys fully redacts every custom key length and preserves other providers", async () => {
+	const inventory = await import("../app/api/keys/route.ts");
+	const rows = async () => (await (await inventory.GET()).json()).keys as import("../src/core/auth-keys.ts").AuthKeyStatus[];
+	assert.equal(keys.saveKey("OPENAI_API_KEY", "ordinary-provider-key-abcd").ok, true);
+	const ordinary = (await rows()).find(row => row.id === "OPENAI_API_KEY")!;
+	assert.equal(ordinary.masked, "…abcd (26 chars)");
+	try {
+		for (const value of ["1", "12", "123", "1234", "synthetic-custom-secret-longer-than-four"]) {
+			assert.equal((await mutate({ baseUrl: "http://new/v1", authMode: "apiKey", key: value })).status, 200);
+			assert.equal(keys.keyValue(CUSTOM_PROVIDER.envVar), value, "short keys still save unchanged");
+			const statuses = await rows();
+			const custom = statuses.find(row => row.id === CUSTOM_PROVIDER.envVar)!;
+			assert.equal(custom.masked, "••••"); assert.equal(custom.present, true); assert.equal(custom.source, "file");
+			assert.ok(!JSON.stringify(custom).includes(value));
+			assert.deepEqual(statuses.find(row => row.id === "OPENAI_API_KEY"), ordinary);
+		}
+		process.env.LH_IGNORE_ENV_KEYS = "0";
+		process.env[CUSTOM_PROVIDER.envVar] = "765"; authEnvRecord().realEnv.add(CUSTOM_PROVIDER.envVar);
+		const custom = (await rows()).find(row => row.id === CUSTOM_PROVIDER.envVar)!;
+		assert.equal(custom.masked, "••••"); assert.equal(custom.source, "env"); assert.equal(custom.present, true); assert.equal(custom.shadowedByEnv, true);
+		assert.ok(!JSON.stringify(custom).includes("765"));
+	} finally {
+		authEnvRecord().realEnv.delete(CUSTOM_PROVIDER.envVar); delete process.env[CUSTOM_PROVIDER.envVar]; process.env.LH_IGNORE_ENV_KEYS = "1";
+		keys.deleteKey("OPENAI_API_KEY");
+	}
+});
 test("changing destination cannot silently reuse an existing credential", async () => {
 	setFileKey("private-old");
 	const payload = { baseUrl: "http://new/v1", authMode: "apiKey" };

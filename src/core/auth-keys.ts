@@ -207,7 +207,8 @@ export interface AuthKeyStatus {
 	info: AuthKeyInfo | null;
 	/** A key is present when EITHER the environment or the file has it. */
 	present: boolean;
-	/** The masked tail + character count, e.g. "…ab12 (64 chars)". */
+	/** Ordinary masked tail + count, e.g. "…ab12 (64 chars)"; custom keys
+	 * use full redaction, with no credential characters at any length. */
 	masked: string | null;
 	/** Where the live value comes from, given env-wins precedence. */
 	source: "env" | "file" | "none";
