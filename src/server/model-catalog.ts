@@ -49,10 +49,17 @@ import type {
 	SlotPins,
 } from "../core/contracts/models.ts";
 import type { EffectiveModelSpec, EffectiveSlot } from "../core/settings-resolution.ts";
-import { AUTH_PROVIDER_KEYS } from "../core/auth-keys.ts";
+import { AUTH_PROVIDER_KEYS, CUSTOM_PROVIDER } from "../core/auth-keys.ts";
 import { claudeCodeAvailable } from "./claude-code-config.ts";
 import { CLAUDE_CODE_PROVIDER } from "../agent/claude-code/constants.ts";
-import { BACKGROUND_MODEL_ROLES, MODEL_SLOTS, type BackgroundModelRole, type ModelSlotName, type ModelsSettings } from "../core/settings.ts";
+import {
+	BACKGROUND_MODEL_ROLES,
+	MODEL_SLOTS,
+	customProviderUsable,
+	type BackgroundModelRole,
+	type ModelSlotName,
+	type ModelsSettings,
+} from "../core/settings.ts";
 
 /** The picker's client-safe model entry (contract: core/contracts/models.ts). */
 export type ModelDto = ModelCatalogEntry;
@@ -149,6 +156,11 @@ export function catalogProviders(): CatalogProvider[] {
 		{ id: CLAUDE_CODE_PROVIDER, envVar: "", keyPresent: claudeCodeAvailable() },
 		...NATIVE_SUBSCRIPTIONS.map((p) => ({ id: p.logicalId, envVar: "", keyPresent: nativeSubscriptionConnected(p.providerId) })),
 		...customProviderRows(),
+		// The custom endpoint: a row only when usable (base URL set). keyPresent
+		// reflects usability, not key presence (keyless local servers are allowed).
+		...(customProviderUsable(effectiveSettings().customProvider)
+			? [{ id: CUSTOM_PROVIDER.id, envVar: CUSTOM_PROVIDER.envVar, keyPresent: true }]
+			: []),
 	]).sort((a, b) => a.id.localeCompare(b.id));
 }
 

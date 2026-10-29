@@ -40,7 +40,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useBackdropDismiss } from "@/components/backdrop-dismiss";
 import type React from "react";
-import { type ModelCatalogEntry, type ModelSlotName, type ModelsSettings } from "@/src/core";
+import { type ModelCatalogEntry, type ModelSlotName, type ModelsSettings, CUSTOM_PROVIDER } from "@/src/core";
 import { prettyModel } from "@/components/usage-format";
 import { ModelMenuList } from "@/components/settings/model-menu";
 import { MenuShell } from "@/components/menu-shell";
@@ -48,7 +48,7 @@ import { notifySettingsSaved, useSettingsSaved } from "@/components/settings-sig
 import { useModelCatalog } from "@/components/model-catalog";
 import { savedSlotsConfigured } from "@/components/setup-cta";
 import { Hint } from "@/components/ui/hint";
-import { type ProviderKeyInfo } from "@/components/settings/keys-section";
+import { type ProviderKeyInfo, CUSTOM_PROVIDER_INFO } from "@/components/settings/keys-section";
 import { ProviderMenuList } from "@/components/settings/model-menu";
 import { ChatGPTBackgroundAccess } from "@/components/settings/chatgpt-connection";
 import { NativeSubscriptionBackgroundAccess, SubscriptionConnections } from "@/components/settings/subscription-connections";
@@ -134,6 +134,9 @@ export function SetupKeysBody({
 	onValue,
 	onSave,
 	menuAnchor,
+	isCustom,
+	baseUrl,
+	onBaseUrl,
 }: {
 	/** The full provider roster (GET /api/keys providers) — undefined
 	 *  while it loads; the picker renders an honest empty state then. */
@@ -151,6 +154,11 @@ export function SetupKeysBody({
 	onSave: () => void;
 	/** The MenuShell anchor — wired by the wrapper (its triggerRef). */
 	menuAnchor: React.RefObject<HTMLDivElement | null>;
+	/** Chosen provider is the custom endpoint: a base URL field joins the key
+	 *  field. All three optional so plain-key callers (and tests) stay unchanged. */
+	isCustom?: boolean;
+	baseUrl?: string;
+	onBaseUrl?: (v: string) => void;
 }) {
 	return (
 		<div className="flex flex-col gap-3 px-6 py-5" data-testid="setup-stage-keys">
@@ -185,30 +193,44 @@ export function SetupKeysBody({
 					)}
 				</div>
 				{provider && (
-					<div className="flex max-w-96 items-center gap-2">
-						<input
-							type="text"
-							value={value}
-							onChange={(e) => onValue(e.target.value)}
-							onKeyDown={(e) => {
-								if (e.key === "Enter" && value.trim()) onSave();
-							}}
-							placeholder="Paste key…"
-							aria-label={`${provider.label} key`}
-							data-testid="setup-key-input"
-							disabled={saving}
-							autoFocus
-							className="h-7 min-w-0 flex-1 rounded-sm border border-border bg-background px-1.5 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground/60 focus:border-muted-foreground/50"
-						/>
-						<button
-							type="button"
-							onClick={onSave}
-							disabled={saving || !value.trim()}
-							data-testid="setup-key-save"
-							className="shrink-0 rounded-sm border border-border bg-background px-3 py-1.5 font-ui text-xs text-foreground transition-colors hover:border-muted-foreground/50 disabled:cursor-not-allowed disabled:opacity-40"
-						>
-							{saving ? "Saving…" : "Save key"}
-						</button>
+					<div className="flex max-w-96 flex-col gap-2">
+						{isCustom && (
+							<input
+								type="text"
+								value={baseUrl ?? ""}
+								onChange={(e) => onBaseUrl?.(e.target.value)}
+								placeholder="Base URL, e.g. http://localhost:11434/v1"
+								aria-label="Custom endpoint base URL"
+								data-testid="setup-custom-baseurl"
+								disabled={saving}
+								className="h-7 w-full rounded-sm border border-border bg-background px-1.5 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground/60 focus:border-muted-foreground/50"
+							/>
+						)}
+						<div className="flex items-center gap-2">
+							<input
+								type="text"
+								value={value}
+								onChange={(e) => onValue(e.target.value)}
+								onKeyDown={(e) => {
+									if (e.key === "Enter" && value.trim()) onSave();
+								}}
+								placeholder={isCustom ? "API key — required (any value works for local servers)" : "Paste key…"}
+								aria-label={`${provider.label} key`}
+								data-testid="setup-key-input"
+								disabled={saving}
+								autoFocus
+								className="h-7 min-w-0 flex-1 rounded-sm border border-border bg-background px-1.5 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground/60 focus:border-muted-foreground/50"
+							/>
+							<button
+								type="button"
+								onClick={onSave}
+								disabled={saving || !value.trim()}
+								data-testid="setup-key-save"
+								className="shrink-0 rounded-sm border border-border bg-background px-3 py-1.5 font-ui text-xs text-foreground transition-colors hover:border-muted-foreground/50 disabled:cursor-not-allowed disabled:opacity-40"
+							>
+								{saving ? "Saving…" : isCustom ? "Connect" : "Save key"}
+							</button>
+						</div>
 					</div>
 				)}
 				{error && (
@@ -264,6 +286,7 @@ function OpenSetupDialog({ onClose, onDone }: SetupDialogProps) {
 	const [keyProviders, setKeyProviders] = useState<ProviderKeyInfo[] | undefined>(undefined);
 	const [keyProvider, setKeyProvider] = useState<ProviderKeyInfo | null>(null);
 	const [keyValue, setKeyValue] = useState("");
+	const [customBaseUrl, setCustomBaseUrl] = useState("");
 	const [keySaving, setKeySaving] = useState(false);
 	const [keyError, setKeyError] = useState<string | null>(null);
 	const [keyMenuOpen, setKeyMenuOpen] = useState(false);
@@ -374,14 +397,23 @@ function OpenSetupDialog({ onClose, onDone }: SetupDialogProps) {
 	 *  close recovery or advance to the missing model slots. Shape-gate
 	 *  400s keep their user-facing line inline. */
 	async function saveKey() {
-		if (!keyProvider || !keyValue.trim() || keySaving) return;
+		if (!keyProvider || keySaving) return;
+		const isCustom = keyProvider.id === CUSTOM_PROVIDER.id;
+		if (!keyValue.trim()) return;
 		setKeySaving(true);
 		setKeyError(null);
-		const res = await fetch(`/api/keys/${encodeURIComponent(keyProvider.envVar)}`, {
-			method: "PUT",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify({ value: keyValue }),
-		}).catch(() => null);
+		// Custom endpoint connects through its own route; every other provider is a plain key PUT.
+		const res = isCustom
+			? await fetch("/api/custom-provider", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ baseUrl: customBaseUrl, key: keyValue }),
+				}).catch(() => null)
+				: await fetch(`/api/keys/${encodeURIComponent(keyProvider.envVar)}`, {
+						method: "PUT",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ value: keyValue }),
+					}).catch(() => null);
 		setKeySaving(false);
 		if (!res || !res.ok) {
 			const body = (await res?.json().catch(() => ({}))) as { error?: string } | undefined;
@@ -390,6 +422,7 @@ function OpenSetupDialog({ onClose, onDone }: SetupDialogProps) {
 		}
 		setKeyProvider(null);
 		setKeyValue("");
+		setCustomBaseUrl("");
 		notifySettingsSaved("keys");
 	}
 
@@ -420,13 +453,16 @@ function OpenSetupDialog({ onClose, onDone }: SetupDialogProps) {
 	}
 
 	const keysBody = <SetupKeysBody
-		providers={keyProviders}
+		providers={keyProviders ? [...keyProviders, CUSTOM_PROVIDER_INFO] : undefined}
 		provider={keyProvider}
 		value={keyValue}
 		saving={keySaving}
 		error={keyError}
 		menuOpen={keyMenuOpen}
 		menuAnchor={keyTriggerRef}
+		isCustom={keyProvider?.id === CUSTOM_PROVIDER.id}
+		baseUrl={customBaseUrl}
+		onBaseUrl={setCustomBaseUrl}
 		onToggleMenu={() => setKeyMenuOpen((v) => !v)}
 		onPick={(p) => { setKeyProvider(p); setKeyMenuOpen(false); setKeyError(null); }}
 		onValue={setKeyValue}
@@ -483,7 +519,9 @@ function OpenSetupDialog({ onClose, onDone }: SetupDialogProps) {
 							// Unavailable metadata cannot erase or clamp a saved preference.
 							const levelsForEntry = metadata?.supportedLevels ?? (entry ? Object.keys(THINKING_LABEL) : []);
 							const available = catalog?.models ?? (failed ? [] : undefined);
-							const slotCatalog = slot === "vision" ? available?.filter((m) => m.input.includes("image")) : available;
+							const slotCatalog = slot === "vision"
+								? available?.filter((m) => m.input.includes("image") || m.provider === CUSTOM_PROVIDER.id)
+								: available;
 							return (
 								<div key={slot} data-testid={`setup-slot-${slot}`} className="flex flex-col gap-1.5">
 									<span className="flex items-center gap-1.5">
@@ -537,6 +575,7 @@ function OpenSetupDialog({ onClose, onDone }: SetupDialogProps) {
 														models={slotCatalog}
 														effectiveId={entry?.id}
 														effectiveProvider={entry?.provider}
+														vision={slot === "vision"}
 														onPick={(m) => {
 															editedSlots.current.add(slot);
 															setPicked((prev) => ({ ...prev, [slot]: m }));

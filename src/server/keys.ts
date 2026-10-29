@@ -43,6 +43,7 @@ import {
 	AUTH_KEYS,
 	AUTH_PROVIDER_KEYS,
 	AUTH_PROVIDER_ENV_VARS,
+	CUSTOM_PROVIDER,
 	type AuthKeyInfo,
 	type AuthKeyStatus,
 	genericProviderKeyGuard,
@@ -62,10 +63,10 @@ import { CLAUDE_CODE_PROVIDER } from "../agent/claude-code/constants.ts";
 // without importing this store-backed module into the agent layer.
 import { authEnvRecord as boot } from "../core/auth-env.ts";
 
-/** Is `id` a WRITABLE key name — curated catalog or model-provider env
- *  var (provider-keys interlude: PUT/DELETE accept both). */
+/** Is `id` a WRITABLE key name — curated catalog, model-provider env var, or
+ *  the custom endpoint's reserved key (writable through the same seam). */
 export function isWritableAuthKey(id: string): boolean {
-	return isKnownAuthKey(id) || isProviderEnvVar(id);
+	return isKnownAuthKey(id) || isProviderEnvVar(id) || id === CUSTOM_PROVIDER.envVar;
 }
 
 /** The settings page's provider dropdown: every pi-ai provider that takes
@@ -209,7 +210,10 @@ export function providerKeyPresent(provider: string): boolean {
  * reports shadowedByEnv so the page can explain it).
  */
 export function saveKey(id: string, value: string): { ok: true; status: AuthKeyStatus } | { ok: false; error: string } {
-	const shape = isProviderEnvVar(id) ? genericProviderKeyGuard(id, value) : validateKeyShape(id, value);
+	const shape =
+		isProviderEnvVar(id) || id === CUSTOM_PROVIDER.envVar
+			? genericProviderKeyGuard(id, value)
+			: validateKeyShape(id, value);
 	if (!shape.ok) return { ok: false, error: shape.error };
 	const trimmed = value.trim();
 	authStore.setAuthVar(id, trimmed);
