@@ -909,7 +909,7 @@ function CustomEndpointEditor({
 			{authMode === "apiKey" && keySource === "env" && <p className="text-[11px] text-muted-foreground" data-testid="custom-env-owned">Environment supplies the effective key. Change the environment to replace it.</p>}
 			{authMode === "apiKey" && keyPresent && (changedTarget || keyReuseRequired) && <label className="text-[11px]"><input type="checkbox" data-testid="custom-reuse-key" checked={reuseKey} onChange={(e) => setReuseKey(e.target.checked)} /> Allow reuse of the effective existing key for this URL</label>}
 			<div className="flex items-center gap-2">
-				<input
+				{authMode === "apiKey" && <input
 					type="password"
 					value={key}
 					onChange={(e) => {
@@ -917,12 +917,12 @@ function CustomEndpointEditor({
 						setKeyTouched(true);
 						if (!e.target.value.trim()) setAuthMode("keyless");
 					}}
-					placeholder={authMode === "keyless" ? "Keyless — saved/environment keys are not used" : keyPresent ? "Leave blank to keep effective key" : "API key"}
+					placeholder={keyPresent ? "Leave blank to keep effective key" : "API key"}
 					aria-label="Custom endpoint API key"
 					data-testid="custom-key-input"
-					disabled={busy || pinsBusy || authMode === "keyless" || keySource === "env"}
+					disabled={busy || pinsBusy || keySource === "env"}
 					className="h-7 min-w-0 flex-1 rounded-sm border border-border bg-background px-1.5 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground/60 focus:border-muted-foreground/50"
-				/>
+				/>}
 				<button
 					type="button"
 					onClick={() => void save()}
@@ -958,9 +958,6 @@ function CustomEndpointEditor({
 			</div>
 			{!setup && models.length > 0 && (
 				<div className="flex flex-col gap-1" data-testid="custom-pins">
-					<span className="text-[11px] text-muted-foreground">
-						Budget pins do not resize backend context. Blank uses reported limits, then fallback (8192 context / 4096 output). Custom pricing is unknown.
-					</span>
 					<div className="flex max-h-56 flex-col gap-1 overflow-y-auto pr-1">
 						{models.map((m) => {
 							const d = draftOf(m);
@@ -995,38 +992,41 @@ function CustomEndpointEditor({
 									<select
 										value={d.reasoning}
 										onChange={(e) => setDraft(m, { reasoning: e.target.value as PinDraft["reasoning"] })}
-										aria-label={`${m.id} reasoning support`}
+										aria-label={`${m.id} reasoning effort support`}
 										data-testid={pinTestid("custom-pin-reasoning", m.id)}
 										disabled={pinsBusy}
 										className="h-7 shrink-0 rounded-sm border border-border bg-background px-1 font-ui text-[11px] text-foreground outline-none focus:border-muted-foreground/50"
 									>
-										<option value="">Support: reported</option>
-										<option value="on">Support: yes</option>
-										<option value="off">Support: no</option>
+										<option value="">Reasoning effort: Use reported</option>
+										<option value="on">Reasoning effort: Supported</option>
+										<option value="off">Reasoning effort: Not supported</option>
 									</select>
 								</div>
 							);
 						})}
 					</div>
 					<div className="flex items-center gap-2">
-						<button
-							type="button"
-							onClick={() => void savePins()}
-							disabled={pinsBusy || !dirty}
-							data-testid="custom-pins-save"
-							className="shrink-0 text-xs text-foreground underline-offset-2 hover:underline disabled:text-muted-foreground/40 disabled:no-underline"
-						>
-							{pinsBusy ? "Saving…" : "Save limits"}
-						</button>
 						{pinsError && (
 							<p role="alert" data-testid="custom-pins-error" className="text-[11px] text-red-500">
 								{pinsError}
 							</p>
 						)}
+						<button
+							type="button"
+							onClick={() => void savePins()}
+							disabled={pinsBusy || !dirty}
+							data-testid="custom-pins-save"
+							className="ml-auto shrink-0 text-xs text-foreground underline-offset-2 hover:underline disabled:text-muted-foreground/40 disabled:no-underline"
+						>
+							{pinsBusy ? "Saving…" : "Save limits"}
+						</button>
 					</div>
 				</div>
 			)}
-			<p className="text-[11px] text-muted-foreground">Reasoning support is a capability declaration. The effort picker’s Off may not disable a custom backend’s default thinking.</p>
+			<div className="flex flex-col gap-1 text-[11px] text-muted-foreground" data-testid="custom-help">
+				{!setup && models.length > 0 && <p data-testid="custom-budget-help">Budget pins do not resize backend context. Blank uses reported limits, then fallback (8192 context / 4096 output). Custom pricing is unknown.</p>}
+				<p data-testid="custom-reasoning-help">Reasoning support is a capability declaration. The effort picker’s Off may not disable a custom backend’s default thinking.</p>
+			</div>
 			{(error || pinsError) && <button type="button" data-testid="custom-reload" onClick={() => void onReload()} className="text-left text-xs underline">Reload configuration</button>}
 			{error && (
 				<p role="alert" data-testid="custom-error" className="text-xs text-red-500">
