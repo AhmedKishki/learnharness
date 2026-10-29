@@ -62,6 +62,16 @@ describe("pdf-markdown — structure", () => {
 		assert.deepEqual(out.map(markdownOf), ["Cells are covered here.", "Tissues are covered here.", "Organs are covered here."]);
 	});
 
+	it("rejoins a hyphen break after an accented letter (French)", async () => {
+		const [page] = await convert(tinyPdf([{ runs: stack(["Le commissaire peut examiner selon la pré-", "sente partie."], { y: 700 }) }]));
+		assert.equal(markdownOf(page), "Le commissaire peut examiner selon la présente partie.");
+	});
+
+	it("never takes a heading from large digits or symbols (chart labels, map zones)", async () => {
+		const [page] = await convert(tinyPdf([{ runs: [{ text: "2 2/3 43 5", x: 72, y: 720, size: 24 }, ...stack(["Body text about the zones.", "More body text."], { y: 680 })] }]));
+		assert.ok(!markdownOf(page).includes("#"), markdownOf(page));
+	});
+
 	it("never takes a heading from sideways text, however large", async () => {
 		const [page] = await convert(tinyPdf([{
 			runs: [{ text: "arXiv:1706.03762v7", x: 30, y: 300, size: 20, rotated: true }, ...stack(["Body line one", "Body line two"], { y: 700 })],

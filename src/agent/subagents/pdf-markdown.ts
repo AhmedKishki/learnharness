@@ -56,7 +56,11 @@ const CONTROL = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
 const clean = (s: string) => s.replace(COMPAT, (m) => m.normalize("NFKC")).replace(PRIVATE_USE, "").replace(CONTROL, "");
 const roundSize = (l: Line) => Math.round(l.size * 10) / 10;
 // Join a wrapped line, undoing an end-of-line hyphen break ("intermedi-" + "ate").
-const joinWrapped = (a: string, b: string) => (/[a-z]-$/.test(a) && /^[a-z]/.test(b) ? a.slice(0, -1) + b : `${a} ${b}`);
+// Any lowercase letter counts, so French "pré-" + "sente" rejoins too.
+const HYPHEN_BREAK = /\p{Ll}-$/u;
+const joinWrapped = (a: string, b: string) => (HYPHEN_BREAK.test(a) && /^\p{Ll}/u.test(b) ? a.slice(0, -1) + b : `${a} ${b}`);
+// A heading is mostly letters; figure labels ("∑=") and chart or zone digits ("2 2/3 43") are not.
+const mostlyLetters = (s: string) => (s.match(/\p{L}/gu) ?? []).length >= s.replace(/\s/g, "").length / 2;
 
 function toGlyph(item: TextContentItem): Glyph | null {
 	if (!("str" in item)) return null;
@@ -236,7 +240,7 @@ function titleFirst(lines: Line[], body: number): Line[] {
 function toBlocks(lines: readonly Line[], body: number, fullWidth: number): Block[] {
 	// Levels by size relative to the page's body: ranking every size fails on slides, where one 72pt figure label takes level 1.
 	const levelOf = (l: Line): 0 | 1 | 2 | 3 => {
-		if (l.rotated || BULLET.test(l.text) || roundSize(l) < body + 1.95) return 0;
+		if (l.rotated || BULLET.test(l.text) || roundSize(l) < body + 1.95 || !mostlyLetters(l.text)) return 0;
 		return l.size >= body * 1.6 ? 1 : l.size >= body * 1.3 ? 2 : 3;
 	};
 	const blocks: Block[] = [];
@@ -261,7 +265,7 @@ function toBlocks(lines: readonly Line[], body: number, fullWidth: number): Bloc
 			while (listXs.length && l.x0 < listXs.at(-1)! - indent) listXs.pop();
 			if (!listXs.length || l.x0 > listXs.at(-1)! + indent) listXs.push(l.x0);
 			blocks.push({ type: "item", depth: listXs.length - 1, x0: l.x0, y: l.y, size: l.size, text: l.text.replace(BULLET, "") });
-		} else if (prev && (last?.type === "paragraph" || last?.type === "item") && !gap && (prev.text.length >= fullWidth || /[a-z]-$/.test(prev.text))) {
+		} else if (prev && (last?.type === "paragraph" || last?.type === "item") && !gap && (prev.text.length >= fullWidth || HYPHEN_BREAK.test(prev.text))) {
 			// Wrapped prose runs near full width; table rows and form labels are short and stay apart.
 			last.text = joinWrapped(last.text, l.text);
 		} else {
