@@ -83,8 +83,11 @@ function toLine(glyphs: Glyph[]): Line | null {
 	let joined = "";
 	let prevEnd: number | null = null;
 	for (const g of ordered) {
-		// Separate boxes on a form touch in the stream with no space item: add one on a visible gap.
-		if (!rtl && prevEnd !== null && g.str && !/\s$/.test(joined) && !/^\s/.test(g.str) && g.x - prevEnd > (g.size || 1) * 0.25) joined += " ";
+		// Separate boxes on a form touch in the stream with no space item: add one on a visible gap, or when
+		// the text jumps back left ("2025" then "U.S." on a form, "Hours" then the next column line).
+		const size = g.size || 1;
+		const apart = prevEnd !== null && (g.x - prevEnd > size * 0.25 || g.x < prevEnd - size * 2);
+		if (!rtl && apart && g.str && !/\s$/.test(joined) && !/^\s/.test(g.str)) joined += " ";
 		joined += g.str;
 		if (g.str) prevEnd = g.x + g.width;
 	}
@@ -122,21 +125,68 @@ function lineNumbers(glyphs: readonly Glyph[]): Set<Glyph> {
 	return dropped;
 }
 
+const visible = (line: readonly Glyph[]) => line.filter((g) => g.str.trim() && !g.rotated && !g.rtl).sort((p, q) => p.x - q.x);
+
+/** Gaps of at least a font size between neighbouring glyphs of one line. */
+function gapsIn(line: readonly Glyph[]): { lo: number; hi: number; y: number; size: number }[] {
+	const v = visible(line);
+	return v.slice(1).flatMap((g, k) => {
+		const lo = v[k]!.x + v[k]!.width;
+		return g.x - lo >= Math.max(g.size, 6) ? [{ lo, hi: g.x, y: g.y, size: g.size }] : [];
+	});
+}
+
+/** One side of a gutter reads as a prose column: no cell gaps inside (a table's halves still hold them),
+ * pieces of 15+ characters, and mostly lowercase words (table cells are codes and numbers: "SDA0 SA5 PCLK"). */
+function isProseColumn(halves: readonly Glyph[][]): boolean {
+	if (halves.filter((half) => gapsIn(half).length > 0).length > halves.length * 0.3) return false;
+	const texts = halves.map((half) => visible(half).map((g) => g.str).join(" ").trim());
+	const lengths = texts.map((t) => t.length).sort((a, b) => a - b);
+	const words = texts.join(" ").split(/\s+/).filter(Boolean);
+	const lowercase = words.filter((w) => /\p{Ll}/u.test(w)).length;
+	return (lengths[Math.floor(lengths.length / 2)] ?? 0) >= 15 && lowercase >= words.length / 2;
+}
+
+/** Two prose columns that share baselines reach us glued, one pdfjs line per baseline ("generating" then
+ * "• Direct Replacement"). A gutter is one empty vertical strip that at least 5 lines jump across; split
+ * there only when both sides read as prose, then emit the whole left column before the right. */
+function splitColumns(lines: Glyph[][]): Glyph[][] {
+	const gaps = lines.flatMap((line, index) => gapsIn(line).map((gap) => ({ ...gap, index })));
+	for (const seed of gaps) {
+		let [lo, hi] = [seed.lo, seed.hi];
+		const members = new Set<number>();
+		const ys: number[] = [];
+		for (const gap of gaps) {
+			const [nlo, nhi] = [Math.max(lo, gap.lo), Math.min(hi, gap.hi)];
+			if (nhi - nlo < seed.size * 0.5) continue;
+			[lo, hi] = [nlo, nhi];
+			members.add(gap.index);
+			ys.push(gap.y);
+		}
+		if (members.size < 5) continue;
+		const [top, bottom] = [Math.max(...ys) + seed.size, Math.min(...ys) - seed.size];
+		const region = lines.flatMap((line, i) => (visible(line).some((g) => g.y <= top && g.y >= bottom) ? [i] : []));
+		if (region.some((i) => visible(lines[i]!).some((g) => g.x < hi - 1 && g.x + g.width > lo + 1))) continue;
+		const mid = (lo + hi) / 2;
+		const half = (line: Glyph[], left: boolean) => line.filter((g) => (g.x + g.width / 2 < mid) === left);
+		if (![true, false].every((left) => isProseColumn([...members].map((i) => half(lines[i]!, left))))) continue;
+		const column = (left: boolean) => region.map((i) => half(lines[i]!, left)).filter((l) => l.some((g) => g.str.trim()));
+		const outside = (keep: (i: number) => boolean) => lines.filter((_, i) => !region.includes(i) && keep(i));
+		const first = region[0]!;
+		return splitColumns([...outside((i) => i < first), ...column(true), ...column(false), ...outside((i) => i > first)]);
+	}
+	return lines;
+}
+
 async function scanPage(page: PDFPageProxy): Promise<PageScan> {
 	const glyphs = (await page.getTextContent()).items.flatMap((item) => toGlyph(item) ?? []);
 	const margin = lineNumbers(glyphs);
-	const lines: Line[] = [];
-	let current: Glyph[] = [];
-	const flush = () => {
-		const line = toLine(current);
-		if (line) lines.push(line);
-		current = [];
-	};
+	const groups: Glyph[][] = [[]];
 	for (const glyph of glyphs) {
-		if (!margin.has(glyph)) current.push(glyph);
-		if (glyph.hasEOL) flush();
+		if (!margin.has(glyph)) groups.at(-1)!.push(glyph);
+		if (glyph.hasEOL) groups.push([]);
 	}
-	flush();
+	const lines = splitColumns(groups).flatMap((group) => toLine(group) ?? []);
 	return { page, height: page.getViewport({ scale: 1 }).height, lines };
 }
 

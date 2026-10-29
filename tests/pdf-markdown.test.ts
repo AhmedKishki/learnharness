@@ -158,6 +158,32 @@ describe("pdf-markdown — reading order", () => {
 		const md = markdownOf(page);
 		assert.ok(md.indexOf("Left column second line") < md.indexOf("Right column first line"), md);
 	});
+
+	/** One page row per baseline, the way the datasheet cover writes its two columns. */
+	const sideBySide = (left: string[], right: string[], rightX = 320) =>
+		left.flatMap((text, i) => [{ text, x: 72, y: 700 - i * 14 }, { text: right[i]!, x: rightX, y: 700 - i * 14 }]);
+
+	it("splits two prose columns that share baselines and reads the left column first", async () => {
+		const left = ["the timer is a stable device", "for generating accurate delays", "or oscillation with two parts", "an external resistor sets it", "and a capacitor holds charge"];
+		const right = ["direct replacement for older", "timing from microseconds on", "operates in two common modes", "output can sink or source", "stability is better than most"];
+		const [page] = await convert(tinyPdf([{ runs: sideBySide(left, right) }]));
+		const md = markdownOf(page);
+		assert.ok(left.every((line) => md.includes(line)) && right.every((line) => md.includes(line)), md);
+		assert.ok(md.indexOf(left.at(-1)!) < md.indexOf(right[0]!), `left column first:\n${md}`);
+	});
+
+	it("keeps table rows whole: code cells are not prose, and a 3-column table's halves hold cell gaps", async () => {
+		const codes = await convert(tinyPdf([{ runs: sideBySide(["GPIO0 HIGH SDA0 SA5", "GPIO1 HIGH SCL0 SA4", "GPIO2 HIGH SDA1 SA3", "GPIO3 HIGH SCL1 SA2", "GPIO4 HIGH GPCLK0 SA1"], ["PCLK SPI3 CE0 TXD2", "DE SPI3 MISO RXD2", "LCD SPI3 MOSI CTS2", "LCD SPI3 SCLK RTS2", "DPI SPI4 CE0 TXD3"]) }]));
+		assert.match(markdownOf(codes[0]), /GPIO0 HIGH SDA0 SA5 PCLK SPI3 CE0 TXD2/);
+		const rows = [["Acetylcholine", "muscle action and memory", "increased arousal and cognition"], ["Endorphin", "pain and pleasure felt", "decreased anxiety and tension"], ["Dopamine", "mood and sleep patterns", "increased mood and less sleep"], ["Serotonin", "mood and appetite levels", "modulated mood and appetite"], ["Glutamate", "learning and memory traces", "increased learning and memory"]];
+		const [table] = await convert(tinyPdf([{ runs: rows.flatMap((cells, i) => cells.map((text, c) => ({ text, x: 72 + c * 160, y: 700 - i * 14 }))) }]));
+		assert.match(markdownOf(table), /Acetylcholine muscle action and memory increased arousal and cognition/);
+	});
+
+	it("adds the missing space when a line's text jumps back left", async () => {
+		const [page] = await convert(tinyPdf([{ runs: [{ text: "Return", x: 300, y: 700 }, { text: "Form 1040", x: 72, y: 700 }] }]));
+		assert.equal(markdownOf(page), "Return Form 1040");
+	});
 });
 
 describe("pdf-markdown — page kinds", () => {
