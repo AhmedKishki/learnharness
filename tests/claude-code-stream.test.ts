@@ -582,6 +582,7 @@ test("spawns with the model alias, effort, bridge tools, MCP_TOOL_TIMEOUT and th
 	assert.equal(getFlagValue(call.args, "--effort"), "xhigh");
 	assert.equal(getFlagValue(call.args, "--allowedTools"), "mcp__learnharness__read,mcp__learnharness__get_weather");
 	assert.equal(call.env.MCP_TOOL_TIMEOUT, "1800000");
+	assert.equal(call.env.CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT, "1800000");
 	assert.equal(call.env.HOME, process.env.HOME);
 	assert.equal(call.env.CLAUDE_CONFIG_DIR, process.env.CLAUDE_CONFIG_DIR);
 });
