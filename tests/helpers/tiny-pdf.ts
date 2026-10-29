@@ -42,7 +42,7 @@ function content(page: TinyPage): string {
 	return ops.join("\n");
 }
 
-export function tinyPdf(pages: readonly TinyPage[]): Uint8Array {
+export function tinyPdf(pages: readonly TinyPage[]): Uint8Array<ArrayBuffer> {
 	const objects: string[] = [
 		"<< /Type /Catalog /Pages 2 0 R >>",
 		`<< /Type /Pages /Count ${pages.length} /Kids [${pages.map((_, i) => `${5 + i * 2} 0 R`).join(" ")}] >>`,

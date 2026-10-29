@@ -8,6 +8,7 @@ import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-wo
 import { stores } from "../src/server/stores.ts";
 import type { GraphStore } from "../src/core/ports.ts";
 import type { GraphNode, GraphChain, NotesSource, SessionCheckpoint } from "../src/core/contracts.ts";
+import { tinyPdf } from "./helpers/tiny-pdf.ts";
 
 const original = extraction.importNotes;
 after(() => { extraction.importNotes = original; });
@@ -100,4 +101,49 @@ it("route returns 400 without files", async () => {
 	const response = await POST(request([]));
 	assert.equal(response.status, 400);
 	assert.deepEqual(await response.json(), { results: [], error: "no files" });
+});
+
+function upload(files: { name: string; bytes: Uint8Array<ArrayBuffer> | string }[]) {
+	const form = new FormData();
+	for (const { name, bytes } of files) form.append("files", new File([bytes], name));
+	return new Request("http://localhost/api/graph/import", { method: "POST", body: form });
+}
+
+it("a PDF reaches the pipeline as page-marked Markdown and completes with the scanned-pages notice", async () => {
+	const received: string[] = [];
+	extraction.importNotes = async ({ text }) => { received.push(text); return { nodes: 1, chains: 0 }; };
+	const pdf = tinyPdf([{ image: true }, { runs: [{ text: "Week 3", x: 72, y: 700, size: 20 }, { text: "Plants make sugar.", x: 72, y: 660 }] }]);
+	const response = await POST(upload([{ name: "lecture.pdf", bytes: pdf }, { name: "notes.md", bytes: "# plain notes" }]));
+	const { results } = await response.json();
+	assert.deepEqual(received.sort(), ["# plain notes", "--- Page 2 ---\n\n# Week 3\n\nPlants make sugar."]);
+	const byName = (name: string) => results.find((r: { filePath: string }) => r.filePath === name);
+	assert.equal(byName("lecture.pdf").outcome, "completed");
+	assert.equal(byName("lecture.pdf").notice, "Scanned pages may have errors.");
+	assert.equal(byName("notes.md").notice, undefined, "text files carry no notice");
+});
+
+it("PDFs are known by their bytes, not their names", async () => {
+	const received: string[] = [];
+	extraction.importNotes = async ({ text }) => { received.push(text); return { nodes: 0, chains: 0 }; };
+	const pdf = tinyPdf([{ runs: [{ text: "Inside a misnamed file", x: 72, y: 700 }] }]);
+	await POST(upload([{ name: "renamed.txt", bytes: pdf }, { name: "fake.pdf", bytes: "just text" }]));
+	assert.deepEqual(received.sort(), ["--- Page 1 ---\n\nInside a misnamed file", "just text"]);
+});
+
+it("PDFs with nothing to import are refused before any model call", async () => {
+	let calls = 0;
+	extraction.importNotes = async () => { calls++; return { nodes: 0, chains: 0 }; };
+	const response = await POST(upload([
+		{ name: "scan.pdf", bytes: tinyPdf([{ image: true }, {}]) },
+		{ name: "broken.pdf", bytes: "%PDF-1.4\nnot really a pdf" },
+		{ name: "huge.pdf", bytes: tinyPdf(Array.from({ length: 1001 }, () => ({}))) },
+	]));
+	const { results } = await response.json();
+	assert.equal(calls, 0);
+	const errorOf = (name: string) => results.find((r: { filePath: string }) => r.filePath === name);
+	for (const [name, error] of [["scan.pdf", "OCR not supported yet."], ["broken.pdf", "Could not open this PDF."], ["huge.pdf", "Too long. Max 1,000 pages."]] as const) {
+		assert.equal(errorOf(name).ok, false);
+		assert.equal(errorOf(name).outcome, "failed");
+		assert.equal(errorOf(name).error, error);
+	}
 });

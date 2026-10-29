@@ -56,8 +56,11 @@ export function standardFontsDir(): string {
 }
 
 async function openDocument(filePath: string) {
+	return openBytes(new Uint8Array(await fs.readFile(filePath)));
+}
+
+async function openBytes(data: Uint8Array) {
 	const pdfjs = await loadPdfjs();
-	const data = new Uint8Array(await fs.readFile(filePath));
 	// The legacy build in plain node runs on a main-thread fake worker (no
 	// workerSrc needed); teardown is the loading task's destroy().
 	// verbosity 0 = errors only — scanned PDFs (JBIG2 XObjects) otherwise
@@ -159,6 +162,31 @@ export function parsePageSpec(spec: string, total: number): number[] {
 		}
 	}
 	return [...pages].sort((a, b) => a - b);
+}
+
+export type PdfConversion =
+	| { kind: "converted"; pages: PdfPage[] }
+	| { kind: "too-long"; pageCount: number }
+	/** Broken, encrypted, or not a PDF at all: pdfjs could not read it. */
+	| { kind: "unreadable" };
+
+/** An uploaded PDF's pages as Markdown (the notes import's door). The page
+ *  cap is checked before any page is read. */
+export async function convertPdf(data: Uint8Array, maxPages: number): Promise<PdfConversion> {
+	let opened: Awaited<ReturnType<typeof openBytes>>;
+	try {
+		opened = await openBytes(data);
+	} catch {
+		return { kind: "unreadable" };
+	}
+	try {
+		if (opened.doc.numPages > maxPages) return { kind: "too-long", pageCount: opened.doc.numPages };
+		return { kind: "converted", pages: await documentToMarkdown(opened.doc) };
+	} catch {
+		return { kind: "unreadable" };
+	} finally {
+		await opened.task.destroy();
+	}
 }
 
 /** A page's Markdown, or "" for a page with no text (the agent renders those). */

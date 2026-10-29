@@ -14,6 +14,8 @@ export interface NotesImportResult {
 	missing?: string[];
 	provider?: string;
 	slots?: string[];
+	/** A completed import's caveat (every PDF: scanner text may be wrong). */
+	notice?: string;
 }
 
 /** Validate the entire response before applying any row: a malformed index
@@ -31,7 +33,7 @@ export function parseNotesImportResults(body: unknown, files: readonly File[]): 
 		if (r.stats !== undefined && (!r.stats || typeof r.stats !== "object" || !Number.isFinite(r.stats.nodes) || r.stats.nodes < 0 || (r.stats.chains !== undefined && (!Number.isFinite(r.stats.chains) || r.stats.chains < 0)))) throw invalid();
 		if (r.ok && !r.stats) throw invalid();
 		if (!r.ok && typeof r.error !== "string") throw invalid();
-		for (const field of ["error", "code", "provider"] as const) if (r[field] !== undefined && typeof r[field] !== "string") throw invalid();
+		for (const field of ["error", "code", "provider", "notice"] as const) if (r[field] !== undefined && typeof r[field] !== "string") throw invalid();
 		for (const field of ["missing", "slots"] as const) if (r[field] !== undefined && (!Array.isArray(r[field]) || !r[field]!.every((v) => typeof v === "string"))) throw invalid();
 	}
 	return body.results as NotesImportResult[];
@@ -54,6 +56,7 @@ export async function postNotesImport(files: readonly File[]): Promise<NotesImpo
 /** Only error text survives a request; selected Files stay request-local. */
 export function useNotesImport(callbacks: { onStart?: () => void; onFinish?: () => void } = {}) {
 	const [errors, setErrors] = useState<string[]>([]);
+	const [notices, setNotices] = useState<string[]>([]);
 	const [importing, setImporting] = useState(false);
 	const pending = useRef(false);
 	const submit = async (files: File[]) => {
@@ -61,12 +64,14 @@ export function useNotesImport(callbacks: { onStart?: () => void; onFinish?: () 
 		pending.current = true;
 		setImporting(true);
 		setErrors([]);
+		setNotices([]);
 		try {
 			callbacks.onStart?.();
 			const results = await postNotesImport(files);
-			setErrors(results
+			const ordered = [...results].sort((a, b) => a.requestIndex - b.requestIndex);
+			setNotices(ordered.flatMap((r) => (r.ok && r.notice ? [`${r.filePath}: ${r.notice}`] : [])));
+			setErrors(ordered
 				.filter((result) => !result.ok)
-				.sort((a, b) => a.requestIndex - b.requestIndex)
 				.map((r) => `${r.filePath}: ${r.error}${r.code ? `\n${r.code}${r.provider ? ` — ${r.provider}` : ""}${r.missing?.length ? ` — ${r.missing.join(", ")}` : ""}${r.slots?.length ? ` — ${r.slots.join(", ")}` : ""}` : ""}`));
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -78,7 +83,7 @@ export function useNotesImport(callbacks: { onStart?: () => void; onFinish?: () 
 		}
 	};
 	return {
-		errors, importing,
+		errors, notices, importing,
 		onImportFiles: (files: FileList | null) => { if (files) void submit(Array.from(files)); },
 	};
 }
@@ -86,5 +91,12 @@ export function useNotesImport(callbacks: { onStart?: () => void; onFinish?: () 
 export function NotesImportErrors({ errors }: { errors: readonly string[] }) {
 	return <>{errors.map((error, i) => (
 		<p key={i} role="alert" className="max-w-full whitespace-pre-wrap break-words text-xs text-red-400">{error}</p>
+	))}</>;
+}
+
+/** Caveats on imports that succeeded: muted, not alarming. */
+export function NotesImportNotices({ notices }: { notices: readonly string[] }) {
+	return <>{notices.map((notice, i) => (
+		<p key={i} role="status" className="max-w-full whitespace-pre-wrap break-words text-xs text-muted-foreground">{notice}</p>
 	))}</>;
 }
