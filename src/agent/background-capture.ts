@@ -1,11 +1,13 @@
-/** Opt-in behavioral captures: one last request/reply pair per shared worker run.
+/** Opt-in behavioral captures: one last request/reply pair per background worker run.
  * LH_BACKGROUND_CAPTURE=auditor,extractor (or all). Private diagnostic content;
  * never a credential/header recorder, retention policy, or worker recovery store.
  */
 import * as fs from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { NATIVE_SUBSCRIPTIONS } from "../core/contracts/subscriptions.ts";
 import path from "node:path";
 import { PATHS, type ModelRole } from "../../config.ts";
-import type { Api, AssistantMessage, Model, ToolResultMessage } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Model, SimpleStreamOptions, StreamFunction, ToolResultMessage } from "@earendil-works/pi-ai";
 
 type CaptureModel = Pick<Model<Api>, "provider" | "id" | "api">;
 interface Timing {
@@ -133,5 +135,43 @@ export function createBackgroundCapture(input: { role: ModelRole; runId: string;
 			if (timing && timing.finishedAt === undefined) timing.finishedAt = record.finishedAt;
 			write();
 		},
+	};
+}
+
+export type BackgroundCapture = NonNullable<ReturnType<typeof createBackgroundCapture>>;
+// Next dev can instantiate callers/adapters in different route modules. Keep
+// their association process-wide, like the app's extraction/event registries.
+const captureGlobal = globalThis as typeof globalThis & { __lhBackgroundCaptureContext?: AsyncLocalStorage<BackgroundCapture> };
+const activeCapture = captureGlobal.__lhBackgroundCaptureContext ??= new AsyncLocalStorage<BackgroundCapture>();
+const preparedPayloadProviders = new Set(["chatgpt", ...NATIVE_SUBSCRIPTIONS.map((provider) => provider.logicalId)]);
+
+/** Observe an app adapter's FINAL prepared body, after caller replacement and
+ * local restrictions. Async-local association keeps concurrent workers isolated
+ * without changing provider options or exposing auth/transport metadata. */
+export function capturePreparedBackgroundPayload(payload: unknown, model: CaptureModel): void {
+	activeCapture.getStore()?.payload(payload, model);
+}
+
+/** Shared by the native Agent runner and the hand-written PDF/visual loops.
+ * Caller callbacks retain their awaited replacement/exception semantics. */
+export function backgroundCaptureStream(streamFn: StreamFunction, capture: BackgroundCapture | undefined): StreamFunction<Api, SimpleStreamOptions> {
+	if (!capture) return streamFn;
+	return (model, context, options) => {
+		capture.begin(model, context, options?.reasoning);
+		return activeCapture.run(capture, () => streamFn(model, context, {
+			...options,
+			onPayload: async (raw, nativeModel) => {
+				const replacement = await options?.onPayload?.(raw, nativeModel);
+				// App subscription adapters still rewrite this payload. They call
+				// the final prepared-body observer themselves; until then retain
+				// the honestly labeled context (also on pre-dispatch failures).
+				if (!preparedPayloadProviders.has(model.provider)) capture.payload(replacement === undefined ? raw : replacement, nativeModel);
+				return replacement;
+			},
+			onResponse: async (response, nativeModel) => {
+				capture.headers(response.status);
+				await options?.onResponse?.(response, nativeModel);
+			},
+		}));
 	};
 }

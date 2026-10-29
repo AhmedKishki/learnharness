@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import type { AsyncLocalStorage } from "node:async_hooks";
+import type { BackgroundCapture } from "../src/agent/background-capture.ts";
 import * as fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,6 +15,8 @@ const originalFetch = globalThis.fetch;
 fs.mkdirSync(path.join(scratch, "home"));
 fs.writeFileSync(path.join(scratch, "auth.json"), "{}");
 process.env = {
+	...(originalEnv.NODE_TEST_CONTEXT ? { NODE_TEST_CONTEXT: originalEnv.NODE_TEST_CONTEXT } : {}),
+	...(originalEnv.NODE_OPTIONS ? { NODE_OPTIONS: originalEnv.NODE_OPTIONS } : {}),
 	NODE_ENV: "test", HOME: path.join(scratch, "home"),
 	LH_DATA_DIR: path.join(scratch, "data"), LH_AUTH_FILE: path.join(scratch, "auth.json"),
 };
@@ -23,12 +27,22 @@ after(() => {
 	fs.rmSync(scratch, { recursive: true, force: true });
 });
 
-const { createBackgroundCapture, backgroundCaptureEnabled, backgroundCaptureDir } = await import("../src/agent/background-capture.ts");
+const { createBackgroundCapture, backgroundCaptureEnabled, backgroundCaptureDir, capturePreparedBackgroundPayload } = await import("../src/agent/background-capture.ts");
 const { runSubagent } = await import("../src/agent/subagents/pi-run.ts");
 const { streamSimple } = await import("@earendil-works/pi-ai/api/openai-completions");
-const { createFauxCore, fauxAssistantMessage, fauxText } = await import("@earendil-works/pi-ai");
+const { createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall } = await import("@earendil-works/pi-ai");
 const model = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "../node_modules/@earendil-works/pi-ai/dist/providers/data/nvidia.json"), "utf8"))["openai-completions"]["chat:deepseek-ai/deepseek-v4.1-flash"] as Model<"openai-completions">;
 const identity = { provider: model.provider, id: model.id, api: model.api };
+const { runPdfReaderAgent } = await import("../src/agent/subagents/pdf-reader.ts");
+const { runVisualMaker } = await import("../src/agent/subagents/visual-maker.ts");
+const { createCanvas } = await import("@napi-rs/canvas");
+const fixturePng = createCanvas(8, 8).toBuffer("image/png");
+const headless = {
+	available: () => true, unavailableReason: () => null,
+	runDemo: async () => { throw new Error("Unexpected browser operation"); },
+	renderSvg: async () => fixturePng,
+	renderPdfPages: async (_file: string, pages: number[]) => pages.map((page) => ({ page, png: fixturePng })),
+};
 function setup(t: TestContext, selection = "auditor") {
 	const dir = fs.mkdtempSync(path.join(scratch, "captures-"));
 	const previous = backgroundCaptureDir.current;
@@ -65,6 +79,10 @@ function fakeEngine(failSecond = false, fixtureModel = model): PiEngine {
 		fetch: async (_url, init) => {
 			const request = JSON.parse(String(init?.body));
 			assert.equal(request.stream, true);
+			// Exercise the final prepared observer inside asynchronous transport
+			// work as well, so parallel workers test async-local association.
+			await Promise.resolve();
+			capturePreparedBackgroundPayload(request, fixtureModel);
 			calls++;
 			if (calls === 2 && failSecond) throw Object.assign(new TypeError("fetch failed"), {
 				cause: Object.assign(new Error("Headers Timeout Error"), { code: "UND_ERR_HEADERS_TIMEOUT" }),
@@ -199,9 +217,7 @@ test("all records other workers separately; adapters without payload hooks use l
 test("concurrent workers retain independent per-run captures", async (t) => {
 	const dir = setup(t, "all");
 	await Promise.all((["researcher", "extractor"] as const).map(async (role) => {
-		const faux = createFauxCore({});
-		faux.setResponses([fauxAssistantMessage([fauxText(`Reply for ${role}`)])]);
-		await runSubagent([], { role, engine: { model: faux.getModel(), streamFn: faux.streamSimple }, systemPrompt: "Fixture", prompt: `Request for ${role}`, maxTurns: 1 });
+		await runSubagent(tools, { role, engine: fakeEngine(), systemPrompt: "Fixture", prompt: `Request for ${role}`, maxTurns: 2 });
 	}));
 	const files = fs.readdirSync(dir);
 	assert.equal(files.length, 2);
@@ -209,8 +225,26 @@ test("concurrent workers retain independent per-run captures", async (t) => {
 	assert.equal(new Set(records.map((record) => record.runId)).size, 2);
 	for (const record of records) {
 		assert.match(JSON.stringify(record.request), new RegExp(`Request for ${record.role}`));
-		assert.match(JSON.stringify(record.response), new RegExp(`Reply for ${record.role}`));
+		assert.match(JSON.stringify(record.response), /FINAL_THINKING/);
+		const other = record.role === "researcher" ? "extractor" : "researcher";
+		assert.ok(!JSON.stringify(record.request).includes(`Request for ${other}`));
 	}
+});
+
+test("prepared-payload observer uses the process-wide context shared by route module instances", async (t) => {
+	const dir = setup(t);
+	const capture = createBackgroundCapture({ role: "auditor", runId: "shared-context" })!;
+	capture.begin(model, { messages: [] });
+	const shared = (globalThis as typeof globalThis & { __lhBackgroundCaptureContext?: AsyncLocalStorage<BackgroundCapture> }).__lhBackgroundCaptureContext;
+	assert.ok(shared);
+	await shared.run(capture, async () => {
+		await Promise.resolve();
+		capturePreparedBackgroundPayload({ model: "final-prepared-model", input: [] }, model);
+	});
+	capture.finish();
+	const record = readCapture(dir);
+	assert.equal(record.request.format, "provider");
+	assert.equal(record.request.payload.model, "final-prepared-model");
 });
 
 test("cancelled requests retain their input and abort outcome", async (t) => {
@@ -246,6 +280,59 @@ test("unselected background roles produce no captures while running normally", a
 	await runSubagent([], { role: "extractor", engine: { model: faux.getModel(), streamFn: faux.streamSimple }, prompt: "Fixture", systemPrompt: "Fixture", maxTurns: 1 });
 	assert.deepEqual(fs.readdirSync(dir), []);
 });
+
+for (const role of ["pdfReader", "visualMaker"] as const) {
+	for (const selection of [role, "all", "auditor"]) {
+		test(`${role} actual entrypoint honors ${selection} and records its rendered-image session`, async (t) => {
+			const dir = setup(t, selection);
+			const faux = createFauxCore({});
+			const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"></svg>';
+			faux.setResponses([
+				fauxAssistantMessage(role === "pdfReader"
+					? [fauxToolCall("pdf_render", { pages: "1" }, { id: "render" })]
+					: [fauxToolCall("write_svg", { svg }, { id: "write" }), fauxToolCall("render_svg", {}, { id: "render" })], { stopReason: "toolUse" }),
+				fauxAssistantMessage([fauxText(`FINAL_${role}_REPLY`)]),
+			]);
+			const engine = { model: faux.getModel(), streamFn: faux.streamSimple };
+			let calls = 0;
+			const opts = { engine, headless, chatId: `fixture_${role}`, onUsage: () => { calls++; } };
+			if (role === "pdfReader") {
+				const result = await runPdfReaderAgent({ path: path.join(import.meta.dirname, "fixtures/sample-3page.pdf"), question: "Synthetic figure?" }, opts);
+				assert.equal(result.brief, "FINAL_pdfReader_REPLY");
+				assert.deepEqual(result.pagesRead, [1]);
+			} else {
+				const result = await runVisualMaker({ brief: "Synthetic figure." }, opts);
+				assert.equal(result.svg, svg);
+				assert.equal(result.notes, "FINAL_visualMaker_REPLY");
+			}
+			assert.equal(calls, 2, "Instrumentation never adds model calls");
+			if (selection === "auditor") { assert.deepEqual(fs.readdirSync(dir), []); return; }
+			const record = readCapture(dir);
+			assert.equal(record.role, role);
+			assert.equal(record.sourceId, `fixture_${role}`);
+			assert.equal(record.request.turn, 2);
+			assert.equal(record.request.format, "context");
+			assert.ok(record.request.payload.messages.some((message: { role: string; content: { type: string }[] }) =>
+				message.role === "user" && Array.isArray(message.content) && message.content.some((part) => part.type === "image")));
+			assert.match(JSON.stringify(record.request.payload), role === "pdfReader" ? /pdf_render/ : /render_svg/);
+			assert.match(JSON.stringify(record.response), new RegExp(`FINAL_${role}_REPLY`));
+			assert.equal(record.error, null);
+			assert.ok(record.finishedAt >= record.startedAt);
+		});
+	}
+	test(`${role} actual entrypoint retains provider failures`, async (t) => {
+		const dir = setup(t, role);
+		const opts = { engine: fakeEngine(true), headless };
+		const result = role === "pdfReader"
+			? await runPdfReaderAgent({ path: path.join(import.meta.dirname, "fixtures/sample-3page.pdf"), question: "Fixture?" }, opts)
+			: await runVisualMaker({ brief: "Fixture" }, opts);
+		assert.match(JSON.stringify(result), /waiting for response headers/);
+		const record = readCapture(dir);
+		assert.equal(record.request.turn, 2);
+		assert.equal(record.response.message.stopReason, "error");
+		assert.match(record.error.message, /waiting for response headers/);
+	});
+}
 
 test("recording failures and unserializable payloads never throw into a worker", (t) => {
 	const dir = setup(t);

@@ -89,7 +89,7 @@ Normal development does not require importing/backfilling a personal corpus. Mai
 
 `LH_PROVIDER_EVENTS=1` enables raw provider-event debugging under the selected data root. These traces can contain lesson/provider content; treat them as private diagnostic data, not routine logs to publish.
 
-For background-worker behavioral inspection, use `LH_BACKGROUND_CAPTURE=auditor`, a comma-separated role list such as `auditor,extractor`, or `all`. This covers the shared worker runner (`researcher`, `demoBuilder`, `visualMaker`, `pdfReader`, `extractor`, `auditor`), not foreground teaching/probing. For example:
+For background-worker behavioral inspection, use `LH_BACKGROUND_CAPTURE=auditor`, a comma-separated role list such as `auditor,extractor`, or `all`. This covers the shared worker runner (`researcher`, `demoBuilder`, `extractor`, `auditor`) and the separate image-in-the-loop workers (`visualMaker`, `pdfReader`), not foreground teaching/probing. For example:
 
 ```bash
 LH_BACKGROUND_CAPTURE=auditor npm run desktop:dev
@@ -97,7 +97,7 @@ LH_BACKGROUND_CAPTURE=auditor npm run desktop:dev
 
 The flag must reach the **Next server** process; `desktop:dev` starts both Next and Electron with it. Restart an existing server to change the flag. Captures are off by default and written locally to `<data root>/debug/background-captures/<role>-<run ID>.json`, one file per worker run. Each model turn replaces the previous request body and reply; the final file retains the last request, its final assistant response/error, and its tool results. Earlier tool calls/results and returned thinking remain in the conversation replayed by that last request. Compact per-turn timings remain without duplicated request bodies.
 
-`request.format` is `provider` when the adapter exposes its outgoing payload, or `context` for the model-facing conversation when it does not (for example, CLI adapters). The latter is not an HTTP wire capture. Captures do not enable thinking or recover reasoning a provider does not return. Configure model/thinking settings normally. Request options, credentials and HTTP headers are not recorded; recognized credential/header fields nested in payloads are redacted. Files are owner-only on POSIX systems. Serialization/disk errors do not fail workers. Captures contain private source/graph content, have no automatic expiry, and should be reviewed before sharing and deleted manually when no longer needed. This flag does not change model selection, instructions, retries or timeouts.
+`request.format` is `provider` when the adapter exposes its outgoing payload (after the app's final subscription-body restrictions, including ChatGPT's developer-role/tool-namespace rewrite), or `context` for the model-facing conversation when it does not (for example, CLI adapters). The latter is not an HTTP wire capture. Captures do not enable thinking or recover reasoning a provider does not return. Configure model/thinking settings normally. Request options, credentials and HTTP headers are not recorded; recognized credential/header fields nested in payloads are redacted. Files are owner-only on POSIX systems. Serialization/disk errors do not fail workers. Captures contain private source/graph content, have no automatic expiry, and should be reviewed before sharing and deleted manually when no longer needed. This flag does not change model selection, instructions, retries or timeouts.
 
 ## Checks
 

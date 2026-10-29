@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { APP_IDENTITY, piEngineFor, type PiEngine } from "../models.ts";
 import { usageWasAdmitted } from "../subscription-request-cycle.ts";
 import { providerEventObserver } from "../provider-events.ts";
-import { createBackgroundCapture } from "../background-capture.ts";
+import { backgroundCaptureStream, createBackgroundCapture } from "../background-capture.ts";
 import type { ModelRole } from "../../../config.ts";
 
 /**
@@ -80,16 +80,7 @@ export async function runSubagent(tools: AgentTool<any, any>[], opts: SubagentRu
 			tools,
 			messages: opts.messages ?? [],
 		},
-		streamFn: capture ? (model, context, options) => {
-			// A provider may not expose onPayload (e.g. a CLI adapter). Keep its
-			// model-facing context as an explicitly labeled fallback, not fake wire data.
-			capture.begin(model, context, options?.reasoning);
-			return engine.streamFn(model, context, options);
-		} : engine.streamFn,
-		...(capture ? {
-			onPayload: capture.payload,
-			onResponse: (response: { status: number }) => { capture.headers(response.status); },
-		} : {}),
+		streamFn: backgroundCaptureStream(engine.streamFn, capture),
 		...(providerEvents ? { onProviderStreamEvent: providerEvents } : {}),
 		// 0.87.1: shouldStopAfterTurn → finishTurn (same call point; "end"
 		// exits before the steering poll, exactly the old boolean-true).
