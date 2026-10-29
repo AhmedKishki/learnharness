@@ -26,7 +26,6 @@ import {
 	buildOpenAiCompatibleProvider,
 	discoverModels,
 	mergeManualModels,
-	syncCustomProvider,
 } from "../src/server/custom-provider.ts";
 import { piModels } from "../src/agent/models.ts";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
@@ -92,13 +91,13 @@ describe("sanitizeUserSettings — customProvider", () => {
 
 // ─── per-model pins: the read side + THE prune law ───────────────────────────
 describe("sanitizeUserSettings / sanitizeCustomModelOverrides — pins", () => {
-	it("keeps well-formed pins, clamps token counts up to the floor, keeps reasoning:false", () => {
+	it("keeps all positive integer pins and reasoning:false", () => {
 		const out = sanitizeUserSettings({
 			customProvider: {
 				baseUrl: "https://h/v1",
 				overrides: {
 					llama: { context: 131072, maxTokens: 8192, reasoning: true },
-					qwen: { context: 10 }, // under the floor → clamped up (clamp-never-reject on read)
+					qwen: { context: 10 }, // Small positive budgets are preserved.
 					quiet: { reasoning: false }, // a real pin, not an absent one
 					junk: { context: "big", maxTokens: -1, reasoning: "yes" }, // every field junk
 					" ": { context: 4096 }, // no usable id
@@ -108,7 +107,7 @@ describe("sanitizeUserSettings / sanitizeCustomModelOverrides — pins", () => {
 		});
 		assert.deepEqual(out?.customProvider?.overrides, {
 			llama: { context: 131072, maxTokens: 8192, reasoning: true },
-			qwen: { context: CUSTOM_MODEL_PIN_FLOOR },
+			qwen: { context: 10 },
 			quiet: { reasoning: false },
 		});
 	});
@@ -281,11 +280,11 @@ describe("buildOpenAiCompatibleProvider / syncCustomProvider", () => {
 		assert.deepEqual(getSupportedThinkingLevels(plain!), ["off"]);
 	});
 
-	it("registers on a usable sync and removes when the base URL clears", () => {
-		syncCustomProvider({ baseUrl: "http://h/v1", models: [{ id: "live" }] });
+	it("registers the native provider in the shared collection", () => {
+		piModels().setProvider(buildOpenAiCompatibleProvider({ baseUrl: "http://h/v1", models: [{ id: "live" }] }));
 		assert.ok(piModels().getProvider(CUSTOM_PROVIDER.id), "provider registered");
 		assert.ok(piModels().getModel(CUSTOM_PROVIDER.id, "live"), "model resolvable");
-		syncCustomProvider({ baseUrl: "", models: [{ id: "live" }] });
+		piModels().deleteProvider(CUSTOM_PROVIDER.id);
 		assert.equal(piModels().getProvider(CUSTOM_PROVIDER.id), undefined, "provider removed");
 	});
 });

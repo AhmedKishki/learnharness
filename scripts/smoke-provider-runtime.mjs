@@ -80,6 +80,14 @@ async function probe(standalone) {
 		// factories, never the checkout's module or a direct/fake Google adapter.
 		const entry = pathToFileURL(path.join(root, "node_modules/@earendil-works/pi-ai/dist/index.js"));
 		const { createModels } = await import(entry.href);
+		// Keep every native chat implementation evaluable in the standalone
+		// payload even though the custom-provider UI intentionally exposes one API.
+		for (const api of ["anthropic-messages", "openai-completions", "openai-responses", "openai-codex-responses", "azure-openai-responses", "google-generative-ai", "google-vertex", "bedrock-converse-stream", "mistral-conversations", "pi-messages"]) {
+			const implementation = await import(new URL(`api/${api}.js`, entry).href);
+			assert.equal(typeof implementation.streamSimple, "function", `${api}: native implementation missing`);
+		}
+		noNetwork();
+		console.log("[smoke-provider-runtime] all 10 native chat implementations evaluated offline");
 		const models = createModels();
 		for (const [name, factory, api, label] of [
 			["google", "googleProvider", "google-generative-ai", "Google"],

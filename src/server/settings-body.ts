@@ -400,7 +400,7 @@ export function parseDictationSettingsBody(body: unknown): SettingsBodyResult<Di
  *  whole desired map, replace-whole like every section. Strict write side — a
  *  token count must be a whole number at or above the floor (the read side
  *  clamps, this rejects — the compaction discipline). `reasoning` is the
- *  tri-state pin: true forces thinking on, false forces it off. */
+ *  tri-state capability pin, not a backend execution toggle. */
 export function parseCustomModelOverridesBody(
 	body: unknown,
 ): SettingsBodyResult<Record<string, CustomModelOverride>> {
@@ -430,7 +430,7 @@ export function parseCustomModelOverridesBody(
 			if (typeof entry.reasoning !== "boolean") return { ok: false, error: `reasoning for ${id} must be true or false` };
 			pin.reasoning = entry.reasoning;
 		}
-		out[id] = pin;
+		Object.defineProperty(out, id, { value: pin, enumerable: true, configurable: true, writable: true });
 	}
 	return { ok: true, settings: out };
 }

@@ -9,7 +9,7 @@ import {
 	type StreamFunction,
 } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
-import { lazyStream } from "@earendil-works/pi-ai/api/lazy";
+import { lazyApi, lazyStream } from "@earendil-works/pi-ai/api/lazy";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type ModelRole } from "../../config.ts";
 import { DEFAULT_THINKING_ORDER } from "../core/settings.ts";
@@ -82,7 +82,14 @@ export function configureProviderSource(source: ProviderSource): void {
 export function piModels() {
 	if (!collection) {
 		collection = createModels({ identity: APP_IDENTITY });
-		for (const provider of builtinProviders()) collection.setProvider(provider);
+		for (const provider of builtinProviders()) {
+			// Keep the native Bedrock implementation reachable by standalone tracing.
+			// Pi's default Node-only loader hides this import from bundlers. Only
+			// replace its lazy forwarding; preserve the native factory's auth/catalog.
+			collection.setProvider(provider.id === "amazon-bedrock"
+				? { ...provider, ...lazyApi(() => import("@earendil-works/pi-ai/api/bedrock-converse-stream")) }
+				: provider);
+		}
 		collection.setProvider(createClaudeCodeProvider(streamClaudeCode));
 	}
 	providerSource?.sync(collection);
@@ -124,7 +131,12 @@ function defaultThinkingLevel(model: Model<Api>): ThinkingLevel {
 export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (() => boolean) = true, lifecycle?: ChatGPTDispatchLifecycle): PiEngine {
 	const models: Models = piModels();
 	const nativeId = nativeSubscriptionId(spec.provider);
-	const model = spec.provider === "chatgpt" ? chatGPTModel(spec.id) : nativeId ? nativeSubscriptionModel(spec.provider, spec.id) : models.getModel(spec.provider, spec.id);
+	const registeredModel = spec.provider === "chatgpt" ? chatGPTModel(spec.id) : nativeId ? nativeSubscriptionModel(spec.provider, spec.id) : models.getModel(spec.provider, spec.id);
+	const custom = providerSource?.isCustom(spec.provider) ?? false;
+	// Custom endpoint owners authorize image attempts independently of sparse
+	// discovery metadata. Never promote the registered/catalog capabilities.
+	const permitImages = (value: Model<Api>): Model<Api> => ({ ...value, input: ["text", "image"] });
+	const model = custom && registeredModel ? permitImages(registeredModel) : registeredModel;
 	if (!model) {
 		throw new Error(`${spec.provider} catalog has no model ${spec.id}`);
 	}
@@ -137,7 +149,6 @@ export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (
 		: defaultThinkingLevel(model);
 	// A lesson's agent loop can stay alive through many tool calls. Remember
 	// only that this is a custom route, never its configuration for that run.
-	const custom = providerSource?.isCustom(spec.provider) ?? false;
 	return {
 		model,
 		level,
@@ -156,7 +167,7 @@ export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (
 				const currentLevel = thinkingPreference
 					? clampThinkingLevel(currentModel, thinkingPreference)
 					: defaultThinkingLevel(currentModel);
-				return current.streamSimple(currentModel, context, { ...options, reasoning: currentLevel === "off" ? undefined : currentLevel });
+				return current.streamSimple(permitImages(currentModel), context, { ...options, reasoning: currentLevel === "off" ? undefined : currentLevel });
 			}
 			const requestOptions = { ...options, reasoning: level === "off" ? undefined : level };
 			const purpose = typeof background === "function" ? background : () => background;

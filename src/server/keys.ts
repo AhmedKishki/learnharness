@@ -54,19 +54,19 @@ import {
 } from "../core/auth-keys.ts";
 import { authStore } from "../store/auth.ts";
 import { isSubscriptionProvider, subscriptionConnected } from "../agent/subscription-connections.ts";
-import { piModels } from "../agent/models.ts";
-import { customProviderConfigured, installCustomProviderSource } from "./custom-providers.ts";
+import { customProviderAvailable, installCustomProviderSource } from "./custom-provider.ts";
 import { claudeCodeAvailable } from "./claude-code-config.ts";
 import { CLAUDE_CODE_PROVIDER } from "../agent/claude-code/constants.ts";
+import { CUSTOM_AUTH_BINDING } from "../core/custom-provider-auth.ts";
 
 // Shared HMR-stable provenance lets external CLIs exclude file-only injections
 // without importing this store-backed module into the agent layer.
 import { authEnvRecord as boot } from "../core/auth-env.ts";
 
-/** Is `id` a WRITABLE key name — curated catalog, model-provider env var, or
- *  the custom endpoint's reserved key (writable through the same seam). */
+/** Ordinary writable key names. Custom auth writes must use the atomic
+ * endpoint-binding seam, never the generic single-key API. */
 export function isWritableAuthKey(id: string): boolean {
-	return isKnownAuthKey(id) || isProviderEnvVar(id) || id === CUSTOM_PROVIDER.envVar;
+	return id !== CUSTOM_AUTH_BINDING && id !== CUSTOM_PROVIDER.envVar && (isKnownAuthKey(id) || isProviderEnvVar(id));
 }
 
 /** The settings page's provider dropdown: every pi-ai provider that takes
@@ -92,7 +92,7 @@ export function envKeysIgnored(): boolean {
  */
 export function initAuthEnv(): void {
 	const record = boot();
-	const fileVars = authStore.authVars();
+	const fileVars = Object.fromEntries(Object.entries(authStore.authVars()).filter(([name]) => name !== CUSTOM_AUTH_BINDING));
 	const managed = new Set<string>([
 		...Object.keys(fileVars),
 		...AUTH_KEYS.map((k) => k.id),
@@ -100,6 +100,7 @@ export function initAuthEnv(): void {
 		// an env-exported OPENAI_API_KEY with a file copy gets honest shadow
 		// semantics, exactly like the curated vars.
 		...AUTH_PROVIDER_KEYS.map((p) => p.envVar),
+		CUSTOM_PROVIDER.envVar,
 	]);
 	if (envKeysIgnored()) {
 		// THE FRESH-USER SWITCH: delete every managed env var (re-run on
@@ -127,7 +128,7 @@ export function initAuthEnv(): void {
 /** Is this env-var name one the keys system manages (curated, provider,
  *  or held in the file)? */
 function isManagedName(name: string): boolean {
-	return isWritableAuthKey(name) || name in authStore.authVars();
+	return name !== CUSTOM_AUTH_BINDING && (isWritableAuthKey(name) || name in authStore.authVars());
 }
 
 /**
@@ -149,6 +150,7 @@ export function resolveKeyStatuses(
 	}
 	const rows: AuthKeyStatus[] = [];
 	for (const id of ids) {
+		if (id === CUSTOM_AUTH_BINDING) continue;
 		const envValue = env[id];
 		const fileValue = fileVars[id];
 		const isRealEnv = realEnv.has(id);
@@ -170,7 +172,7 @@ export function resolveKeyStatuses(
 
 /** The GET view: every curated key (present or not) + unknown file vars. */
 export function keyStatuses(): AuthKeyStatus[] {
-	return resolveKeyStatuses(authStore.authVars(), process.env, boot().realEnv, AUTH_PROVIDER_ENV_VARS);
+	return resolveKeyStatuses(authStore.authVars(), process.env, boot().realEnv, new Set([...AUTH_PROVIDER_ENV_VARS, CUSTOM_PROVIDER.envVar]));
 }
 
 /** The live value for one var, env-first (the env-wins rule) — the canonical
@@ -178,6 +180,7 @@ export function keyStatuses(): AuthKeyStatus[] {
  *  STT route was the one cold-boot hole: a first-ever request to it would
  *  otherwise read env before any fill-gap ran). */
 export function keyValue(id: string): string | undefined {
+	if (id === CUSTOM_AUTH_BINDING) return undefined;
 	// The fresh-user switch: ONLY the file store counts (belt-and-
 	// suspenders — the boot deletion already emptied the env; this guards
 	// any env key reintroduced after boot).
@@ -192,9 +195,7 @@ export function keyValue(id: string): string | undefined {
  * (gate by what would run). Providers absent from AUTH_PROVIDER_KEYS take
  * no key at all: nothing to gate, present by definition. */
 export function providerKeyPresent(provider: string): boolean {
-	piModels(); // Synchronize hand-edited custom configuration before admission.
-	const custom = customProviderConfigured(provider);
-	if (custom !== undefined) return custom;
+	if (provider === CUSTOM_PROVIDER.id) return customProviderAvailable();
 	// Explicit opt-in + installation only, never authentication readiness.
 	// Consulted at admission, not inside already-running agent loops.
 	if (provider === CLAUDE_CODE_PROVIDER) return claudeCodeAvailable();
@@ -210,10 +211,8 @@ export function providerKeyPresent(provider: string): boolean {
  * reports shadowedByEnv so the page can explain it).
  */
 export function saveKey(id: string, value: string): { ok: true; status: AuthKeyStatus } | { ok: false; error: string } {
-	const shape =
-		isProviderEnvVar(id) || id === CUSTOM_PROVIDER.envVar
-			? genericProviderKeyGuard(id, value)
-			: validateKeyShape(id, value);
+	if (id === CUSTOM_PROVIDER.envVar || id === CUSTOM_AUTH_BINDING) return { ok: false, error: "Use the custom endpoint editor" };
+	const shape = isProviderEnvVar(id) ? genericProviderKeyGuard(id, value) : validateKeyShape(id, value);
 	if (!shape.ok) return { ok: false, error: shape.error };
 	const trimmed = value.trim();
 	authStore.setAuthVar(id, trimmed);
@@ -232,6 +231,7 @@ export function saveKey(id: string, value: string): { ok: true; status: AuthKeyS
  * wins) and the status shows the key still present from env.
  */
 export function deleteKey(id: string): AuthKeyStatus {
+	if (id === CUSTOM_PROVIDER.envVar || id === CUSTOM_AUTH_BINDING) throw new Error("Use the custom endpoint editor");
 	authStore.deleteAuthVar(id);
 	const record = boot();
 	if (record.fillGap.has(id) && !record.realEnv.has(id)) {
@@ -244,4 +244,4 @@ export function deleteKey(id: string): AuthKeyStatus {
 // Reflect the file into the env at first import (idempotent; the module is
 // imported by every route/handler path that touches keys).
 initAuthEnv();
-installCustomProviderSource(keyValue);
+installCustomProviderSource();

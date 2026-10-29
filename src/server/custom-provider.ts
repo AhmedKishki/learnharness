@@ -5,10 +5,14 @@
  * local servers work via a placeholder key resolved at request time.
  */
 
-import { createProvider, type ApiKeyAuth, type Api, type Model, type Provider } from "@earendil-works/pi-ai";
+import { createProvider, type Api, type Model, type Provider } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
-import { piModels } from "../agent/models.ts";
+import { configureProviderSource, piModels } from "../agent/models.ts";
+import { readSettings } from "../store/settings.ts";
+import { CustomBodyLimitError, readBoundedJson } from "./custom-provider-body.ts";
 import { CUSTOM_PROVIDER } from "../core/auth-keys.ts";
+import { customBindingMatches } from "../core/custom-provider-auth.ts";
+import { customAuthState, customKeyAuthorized } from "./custom-provider-auth.ts";
 import {
 	CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW,
 	CUSTOM_MODEL_DEFAULT_MAX_TOKENS,
@@ -16,9 +20,8 @@ import {
 	normalizeBaseUrl,
 	type CustomModel,
 	type CustomModelOverride,
-	type CustomProviderSettings,
 } from "../core/settings.ts";
-import { keyValue } from "./keys.ts";
+
 
 /** Placeholder bearer for keyless endpoints (the OpenAI client needs *a* key). */
 const KEYLESS_PLACEHOLDER = "not-needed";
@@ -27,14 +30,32 @@ const KEYLESS_PLACEHOLDER = "not-needed";
 const isRecord = (value: unknown): value is Record<string, unknown> =>
 	typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** Auth: the reserved key via the keys seam, else the keyless placeholder. */
-const customEndpointAuth: ApiKeyAuth = {
-	name: `${CUSTOM_PROVIDER.label} API key`,
-	resolve: async () => {
-		const key = keyValue(CUSTOM_PROVIDER.envVar)?.trim();
-		return { auth: { apiKey: key || KEYLESS_PLACEHOLDER }, source: key ? CUSTOM_PROVIDER.envVar : "keyless" };
-	},
-};
+/** Install the sole custom source: donor settings + explicit authentication.
+ * Publication captures a consistent snapshot; an already-started operation
+ * cannot acquire a later endpoint's key. No file configuration source exists. */
+export function installCustomProviderSource(readAuth = customAuthState): void {
+	let fingerprint: string | undefined;
+	configureProviderSource({
+		isCustom: (id) => id === CUSTOM_PROVIDER.id,
+		sync(models) {
+			const cp = readSettings()?.customProvider;
+			// Validate the durable nonce/URL/mode before resolving ANY credential.
+			// Keyless reads only the nonsecret marker, never a file/env key.
+			const auth = readAuth(cp?.authMode === "apiKey", cp);
+			const key = auth.key;
+			const ready = customProviderUsable(cp) && auth.readable && customBindingMatches(cp, auth.binding) && (cp.authMode === "keyless" || customKeyAuthorized(cp, auth));
+			const next = JSON.stringify([cp, auth]); // Private in-memory fingerprint, never a public revision.
+			if (next === fingerprint) return;
+			if (ready) models.setProvider(buildOpenAiCompatibleProvider({ ...cp, baseUrl: cp.baseUrl, models: cp.models ?? [], apiKey: key }));
+			else models.deleteProvider(CUSTOM_PROVIDER.id);
+			fingerprint = next;
+		},
+	});
+}
+
+export function customProviderAvailable(): boolean {
+	return piModels().getProvider(CUSTOM_PROVIDER.id) !== undefined;
+}
 
 /** Map a discovered model to a pi-ai entry: image→input, reasoning→thinking
  *  levels, context/maxTokens→limits. Resolution ladder (owner, 2026-10-27):
@@ -72,13 +93,18 @@ export function buildOpenAiCompatibleProvider(input: {
 	models: readonly CustomModel[];
 	/** User pins by model id (see CustomModelOverride) — absent = none. */
 	overrides?: Record<string, CustomModelOverride>;
+	/** Already resolved for this publication; absent means explicit keyless. */
+	apiKey?: string;
 }): Provider<Api> {
 	const overrides = input.overrides ?? {};
 	return createProvider<Api>({
 		id: CUSTOM_PROVIDER.id,
 		name: CUSTOM_PROVIDER.label,
 		baseUrl: input.baseUrl,
-		auth: { apiKey: customEndpointAuth },
+		auth: { apiKey: {
+			name: `${CUSTOM_PROVIDER.label} API key`,
+			resolve: async () => ({ auth: { apiKey: input.apiKey ?? KEYLESS_PLACEHOLDER }, source: input.apiKey ? CUSTOM_PROVIDER.envVar : "keyless" }),
+		} },
 		models: input.models.map((m) => toPiModel(m, input.baseUrl, overrides)),
 		api: openAICompletionsApi(),
 	});
@@ -86,19 +112,8 @@ export function buildOpenAiCompatibleProvider(input: {
 
 /** Re-sync the provider into piModels() (idempotent): usable → rebuild;
  *  not usable → remove. Never throws. */
-export function syncCustomProvider(cp: CustomProviderSettings | undefined): void {
-	const models = piModels();
-	if (!customProviderUsable(cp)) {
-		models.deleteProvider(CUSTOM_PROVIDER.id);
-		return;
-	}
-	models.setProvider(
-		buildOpenAiCompatibleProvider({
-			baseUrl: normalizeBaseUrl(cp.baseUrl),
-			models: cp.models ?? [],
-			overrides: cp.overrides ?? {},
-		}),
-	);
+export function syncCustomProvider(): void {
+	piModels();
 }
 
 /** Outcome of a model-discovery probe. `status` is the endpoint's HTTP status
@@ -106,7 +121,7 @@ export function syncCustomProvider(cp: CustomProviderSettings | undefined): void
  *  model list. */
 export type DiscoverResult =
 	| { ok: true; models: CustomModel[] }
-	| { ok: false; error: string; status?: number };
+	| { ok: false; error: string; status?: number; fatal?: boolean };
 
 /** Probe GET {baseUrl}/models for model ids. Scheme validated (http/https
  *  only); keyless endpoints answer without a bearer. Non-2xx or unparseable
@@ -114,22 +129,26 @@ export type DiscoverResult =
 export async function discoverModels(baseUrl: string, apiKey?: string): Promise<DiscoverResult> {
 	const base = normalizeBaseUrl(baseUrl);
 	if (!base) return { ok: false, error: "Base URL must be a valid http(s) URL" };
-	const key = apiKey?.trim() || keyValue(CUSTOM_PROVIDER.envVar)?.trim();
+	const key = apiKey?.trim();
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), 15_000);
 	try {
 		const res = await fetch(`${base}/models`, {
 			headers: key ? { authorization: `Bearer ${key}` } : {},
 			signal: controller.signal,
+			redirect: "manual",
 		});
-		if (!res.ok) return { ok: false, error: `Endpoint returned ${res.status} ${res.statusText}`, status: res.status };
-		const body = (await res.json().catch(() => null)) as unknown;
+		if (res.status >= 300 && res.status < 400) {
+			await res.body?.cancel();
+			return { ok: false, error: "Discovery redirects are not allowed", fatal: true };
+		}
+		if (!res.ok) { await res.body?.cancel(); return { ok: false, error: `Endpoint returned HTTP ${res.status}`, status: res.status }; }
+		const body = await readBoundedJson(res, 8 * 1024 * 1024);
 		const list = extractModels(body);
 		if (list === null) return { ok: false, error: "Endpoint response was not a model list" };
 		return { ok: true, models: list };
 	} catch (err) {
-		const msg = err instanceof Error ? (err.name === "AbortError" ? "Endpoint timed out" : err.message) : "Request failed";
-		return { ok: false, error: msg };
+		return { ok: false, error: err instanceof CustomBodyLimitError ? err.message : controller.signal.aborted ? "Endpoint timed out" : "Discovery request failed", fatal: err instanceof CustomBodyLimitError };
 	} finally {
 		clearTimeout(timer);
 	}
@@ -210,6 +229,7 @@ const MAX_TOKEN_KEYS = ["max_output_tokens"] as const;
 function extractModels(body: unknown): CustomModel[] | null {
 	const rows = modelRows(body);
 	if (rows === null) return null;
+	if (rows.length > 10_000) throw new CustomBodyLimitError("Model list exceeds 10000 entries");
 	const byId = new Map<string, CustomModel>();
 	for (const row of rows) {
 		if (typeof row === "string") {

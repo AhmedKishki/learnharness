@@ -75,8 +75,6 @@ export interface ModelCatalogResponse {
 	 *  are simply absent (the Keys page is the discovery surface, same
 	 *  discipline as the search engines). */
 	providers: CatalogProvider[];
-	/** Sanitized configuration diagnostic; built-in catalogs remain available. */
-	customProvidersError?: string;
 }
 
 /** One row of the providers surface. */

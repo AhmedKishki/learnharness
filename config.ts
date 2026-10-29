@@ -111,9 +111,6 @@ export const GRAPH_FORMAT_FILE = path.join(PATHS.graph, "format.json");
  */
 export const SETTINGS_FILE = path.join(DATA_ROOT, "settings.json");
 
-/** Explicit custom-provider/model definitions; never read the user's Pi profile. */
-export const CUSTOM_MODELS_FILE = path.join(DATA_ROOT, "models.json");
-
 /**
  * User prompt-override files (settings-storage wave, 2026-09-19): the
  * per-segment system-prompt overrides mirroring the SOURCE layout

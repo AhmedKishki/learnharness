@@ -215,15 +215,12 @@ export interface ModelsSettings {
 // secret in the auth store, never here. Registered into pi-ai as a normal
 // provider (server/custom-provider.ts).
 
-/** Defaults for a custom model — self-hosted endpoints are free. */
+/** Budget fallbacks only; custom endpoint pricing is unknown. */
 export const CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW = 8192;
 export const CUSTOM_MODEL_DEFAULT_MAX_TOKENS = 4096;
 
-/** Floor for a user-pinned token count (owner, 2026-10-27): the read side
- *  clamps up, the write side rejects below — the compaction-floor discipline.
- *  Pins exist because endpoints that publish no limits (LM Studio) otherwise
- *  sit on the 8192 default with no way to say better. */
-export const CUSTOM_MODEL_PIN_FLOOR = 2_048;
+/** Custom budgets accept every positive integer, including small output caps. */
+export const CUSTOM_MODEL_PIN_FLOOR = 1;
 
 /** One discovered custom model. `image`/`reasoning`/`context`/`maxTokens` are
  *  detected from the endpoint's /models metadata; anything it omits falls back
@@ -244,8 +241,8 @@ export interface CustomModel {
 /** A user pin for one custom model: it beats what the endpoint publishes
  *  (owner ruling — explicit user intent wins; a local server's number is
  *  often wrong or absent). Absent field = no pin. `reasoning` is tri-state:
- *  true forces thinking on, false forces it off (a server that advertises
- *  reasoning but rejects reasoning_effort), absent = what discovery found. */
+ *  true declares reasoning support, false removes that declaration, absent
+ *  uses discovery. This is NOT a backend execution/disable switch. */
 export interface CustomModelOverride {
 	context?: number;
 	maxTokens?: number;
@@ -254,6 +251,10 @@ export interface CustomModelOverride {
 
 /** The single custom endpoint's stored config (delta section). */
 export interface CustomProviderSettings {
+	/** Server-owned random authorization nonce; never a credential hash. */
+	credentialBindingId?: string;
+	/** Explicit authentication intent; never inferred from a saved key. */
+	authMode?: "keyless" | "apiKey";
 	/** Normalized base URL (see normalizeBaseUrl). Empty/absent = not configured. */
 	baseUrl?: string;
 	/** Models this endpoint offers: advertised ids merged with the typed
@@ -287,6 +288,7 @@ export function normalizeBaseUrl(raw: string): string {
 		return "";
 	}
 	if (url.protocol !== "http:" && url.protocol !== "https:") return "";
+	if (url.username || url.password || url.search || url.hash || value.includes("?") || value.includes("#")) return "";
 	return url.toString().replace(/\/+$/, "");
 }
 
@@ -625,7 +627,7 @@ export function sanitizeCustomModelOverrides(
 		const id = key.trim();
 		if (!id || (live && !live.has(id))) continue;
 		const pin = sanitizeCustomModelOverride(value);
-		if (pin) out[id] = pin;
+		if (pin) Object.defineProperty(out, id, { value: pin, enumerable: true, configurable: true, writable: true });
 	}
 	return out;
 }
@@ -635,6 +637,8 @@ export function sanitizeCustomModelOverrides(
  *  true; token counts only as positive ints). Clamp-never-reject. */
 function sanitizeCustomProvider(raw: Record<string, unknown>): CustomProviderSettings {
 	const out: CustomProviderSettings = {};
+	if (typeof raw.credentialBindingId === "string" && /^[a-f0-9]{32}$/.test(raw.credentialBindingId)) out.credentialBindingId = raw.credentialBindingId;
+	if (raw.authMode === "keyless" || raw.authMode === "apiKey") out.authMode = raw.authMode;
 	if (typeof raw.baseUrl === "string") {
 		const base = normalizeBaseUrl(raw.baseUrl);
 		if (base) out.baseUrl = base;

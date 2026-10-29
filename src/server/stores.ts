@@ -36,4 +36,4 @@ export function effectiveSettings(): EffectiveSettings {
 
 // Boot: register the custom endpoint (when configured) into piModels(); the
 // POST /api/custom-provider route re-syncs after every connect.
-syncCustomProvider(effectiveSettings().customProvider);
+syncCustomProvider();

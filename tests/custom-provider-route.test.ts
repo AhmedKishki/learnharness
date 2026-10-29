@@ -37,6 +37,7 @@ const CONNECTED = {
 	version: 1,
 	customProvider: {
 		baseUrl: BASE,
+		authMode: "keyless",
 		models: [{ id: "disc-1", context: 131072 }, { id: "disc-2" }],
 		overrides: { "disc-1": { context: 200000 }, "disc-2": { maxTokens: 8192 } },
 		manualModels: ["m1"],
@@ -59,8 +60,8 @@ function post(payload: unknown): Promise<Response> {
 	return route.POST(
 		new Request("http://localhost/api/custom-provider", {
 			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify(payload),
+			headers: { "content-type": "application/json", origin: "http://localhost", "if-match": route.GET(new Request("http://localhost/api/custom-provider")).headers.get("etag")! },
+			body: JSON.stringify({ authMode: payload && typeof payload === "object" && "key" in payload ? "apiKey" : "keyless", ...payload as object }),
 		}),
 	);
 }
