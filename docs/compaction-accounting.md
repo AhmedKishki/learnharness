@@ -67,6 +67,43 @@ metadata does not become a catalog limit or change that trigger. See the
 [CLI metadata reader](../src/core/native-messages.ts), and
 [display limit selection](../components/stats-bar.tsx).
 
+## Prompt-cache retention
+
+Under **Settings → Agent → Models → Show advanced settings**, each Strong,
+Cheap and Vision slot has a **Cache** dropdown. Initial setup stays unchanged.
+Advanced controls start collapsed; hiding them does not reset saved choices.
+
+| Choice | Request behavior |
+| --- | --- |
+| Pi default | Leave Pi's `cacheRetention` option unset. This preserves existing behavior, including `PI_CACHE_RETENTION=long` where Pi honors it. No setting is added until you choose one. |
+| Don’t request caching | Pass Pi's native `none` preference. This is not a universal caching-off switch: providers may still cache automatically. |
+| Short retention | Pass Pi's native `short` preference. |
+| Long retention | Pass Pi's native `long` preference. Cache-write costs may be higher. |
+
+These are **provider-dependent preferences, not fixed durations or cache-hit
+promises**. Pi owns the mapping. For example, supported Anthropic routes map
+Short/Long to five minutes/one hour; OpenAI mappings differ by model. Some
+adapters ignore the preference, subscription transports may omit it, and custom
+compatible endpoints may reject an unsupported parameter. LearnHarness does not
+rewrite these mappings or retry with a different preference.
+
+Chats keep their own selected models but inherit Strong's retention preference.
+Background agents inherit their assigned slot's preference even with a role
+model override; summarization uses the conversation preference. A saved change
+applies to the next model request, including calls in an existing agent loop,
+without changing an in-flight request or issuing any warm-up calls. Explicit
+choices take precedence over Pi's retention environment override; selecting
+Pi default removes the explicit choice again.
+
+On Anthropic, five-minute cache writes cost 1.25× ordinary input and one-hour
+writes cost 2×; reads use the model's discounted cache-read price. Longer
+retention may help across learner pauses, but can cost more for a single call
+or a short-lived background job. Other providers have different pricing.
+See the official [Anthropic caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+and [OpenAI caching](https://developers.openai.com/api/docs/guides/prompt-caching)
+guides. Actual reported cache reads/writes remain distinct from the requested
+preference and do not establish whether a future request will hit a cache.
+
 ## Spending
 
 [`src/server/pricing.ts`](../src/server/pricing.ts) uses Pi AI's full,
