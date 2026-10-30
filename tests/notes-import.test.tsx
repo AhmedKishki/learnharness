@@ -215,6 +215,19 @@ it("completed imports with a notice list it in selection order; failures and pla
 	assert.deepEqual(current.errors, ["a.pdf: OCR not supported yet."]);
 });
 
+for (const [status, error] of [
+	[413, "Too big. Max 25 MB."],
+	[413, "Import request is too large. Select fewer files."],
+	[400, "Could not read the upload. It may be incomplete; please select the files again."],
+] as const) it(`server upload refusal remains readable in the client (${error})`, async () => {
+	globalThis.fetch = async () => Response.json({ results: [], error }, { status });
+	await mount();
+	await submit();
+	assert.deepEqual(current.errors, files.map((file) => `${file.name}: Import request failed (HTTP ${status}): ${error} Please retry the file.`));
+	assert.deepEqual(current.notices, []);
+	assert.equal(current.importing, false);
+});
+
 it("notices render as muted status lines, not alerts", () => {
 	assert.equal(renderToStaticMarkup(<NotesImportNotices notices={[]} />), "");
 	const html = renderToStaticMarkup(<NotesImportNotices notices={["c.pdf: Scanned pages may have errors."]} />);

@@ -1,6 +1,9 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { MAX_IMPORT_BYTES } from "@/lib/notes-import-limits.ts";
+
+export { MAX_IMPORT_BYTES } from "@/lib/notes-import-limits.ts";
 
 // Transport-only types: never import the server's extraction/agent module here.
 export interface NotesImportResult {
@@ -48,15 +51,10 @@ export async function postNotesImport(files: readonly File[]): Promise<NotesImpo
 	catch { throw new Error("Invalid import response. Please retry the file."); }
 	if (!response.ok) {
 		const detail = body && typeof body === "object" && "error" in body && typeof body.error === "string" ? `: ${body.error}` : "";
-		throw new Error(`Import request failed (HTTP ${response.status})${detail}. Please retry the file.`);
+		throw new Error(`Import request failed (HTTP ${response.status})${detail}${/[.!?]$/.test(detail) ? "" : "."} Please retry the file.`);
 	}
 	return parseNotesImportResults(body, files);
 }
-
-/** One pick goes up as one request: a bigger pick is refused before upload.
- * The server's request buffer (next.config.ts proxyClientMaxBodySize)
- * leaves room for multipart overhead. */
-export const MAX_IMPORT_BYTES = 25 * 1024 * 1024;
 
 /** Only error text survives a request; selected Files stay request-local. */
 export function useNotesImport(callbacks: { onStart?: () => void; onFinish?: () => void } = {}) {

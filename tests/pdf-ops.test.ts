@@ -73,6 +73,27 @@ describe("pdf-ops — the pdfjs text layer", () => {
 		}
 	});
 
+	it("search retains repeated numeric margin statements and extraction preserves word breaks", async () => {
+		const file = path.join(os.tmpdir(), `pdf-ops-preserved-${process.pid}.pdf`);
+		fs.writeFileSync(file, tinyPdf([5, 10].map((dose) => ({ runs: [
+			{ text: `Dose ${dose} mg`, x: 72, y: 730 },
+			{ text: "A cognitive-", x: 72, y: 600 },
+			{ text: "behavioral example", x: 72, y: 588 },
+			{ text: "Dose 5 mg", x: 72, y: 500 },
+		] }))));
+		try {
+			const text = await pdfExtract(file, "all");
+			assert.match(text, /Dose 10 mg/);
+			assert.match(text, /cognitive-\n\nbehavioral example/);
+			const { hits } = await pdfSearch(file, "Dose 5 mg", { literal: true, contextLines: 0 });
+			assert.deepEqual(hits.map((hit) => hit.page), [1, 1, 2]);
+			assert.ok(hits.every((hit) => hit.context === ">>> Dose 5 mg"));
+			assert.match(await pdfExtract(file, "1"), /Dose 5 mg/);
+		} finally {
+			fs.rmSync(file, { force: true });
+		}
+	});
+
 	it("pdfProbe accepts the fixture and rejects garbage", async () => {
 		await pdfProbe(FIXTURE); // resolves
 		const garbage = path.join(import.meta.dirname, "fixtures", "not-a-pdf.txt");

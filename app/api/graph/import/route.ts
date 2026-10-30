@@ -18,6 +18,7 @@
  * /api/graph/status, as with session runs.
  */
 import { convertPdf, extraction, joinPages, NotesImportError } from "@/src/server";
+import { MAX_IMPORT_BODY_BYTES, MAX_IMPORT_BYTES } from "@/lib/notes-import-limits.ts";
 import {
 	ModelsNotConfiguredError,
 	PROVIDER_KEY_MISSING_CODE,
@@ -63,14 +64,64 @@ async function readNotesFile(file: File): Promise<NotesFile> {
 			return { kind: "refused", error: "Too long. Max 1,000 pages." };
 		case "converted": {
 			const text = joinPages(pdf.pages);
-			return text ? { kind: "notes", text, notice: "Scanned pages may have errors." } : { kind: "refused", error: "OCR not supported yet." };
+			if (!text) return { kind: "refused", error: "OCR not supported yet." };
+			const skipped = pdf.pages.filter((page) => page.kind === "image-only").length;
+			const omission = skipped > 0 ? ` Skipped ${skipped} image-only ${skipped === 1 ? "page" : "pages"}; OCR is not supported.` : "";
+			return { kind: "notes", text, notice: `Scanned pages may have errors.${omission}` };
 		}
 	}
 }
 
+class ImportBodyLimitError extends Error {}
+
+/** Bound actual body bytes before multipart parsing, including requests without
+ * a trustworthy Content-Length. Next's proxy may truncate first; parsing that
+ * incomplete body is a separate, handled refusal, never a partial import. */
+async function readImportForm(request: Request): Promise<FormData> {
+	if (Number(request.headers.get("content-length")) > MAX_IMPORT_BODY_BYTES) {
+		void request.body?.cancel().catch(() => undefined);
+		throw new ImportBodyLimitError();
+	}
+	const reader = request.body?.getReader();
+	if (!reader) throw new SyntaxError("Missing import body");
+	const chunks: Uint8Array[] = [];
+	let bytes = 0;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			bytes += value.byteLength;
+			if (bytes > MAX_IMPORT_BODY_BYTES) throw new ImportBodyLimitError();
+			chunks.push(value);
+		}
+		const body = new Uint8Array(bytes);
+		let offset = 0;
+		for (const chunk of chunks) {
+			body.set(chunk, offset);
+			offset += chunk.byteLength;
+		}
+		return await new Response(body, { headers: { "Content-Type": request.headers.get("content-type") ?? "" } }).formData();
+	} finally {
+		// Do not wait for a tee's other consumer to finish before refusing an upload.
+		void reader.cancel().catch(() => undefined);
+		reader.releaseLock();
+	}
+}
+
 export async function POST(request: Request) {
-	const form = await request.formData();
+	let form: FormData;
+	try {
+		form = await readImportForm(request);
+	} catch (err) {
+		const oversized = err instanceof ImportBodyLimitError;
+		return Response.json({ results: [] as ImportResult[], error: oversized
+			? "Import request is too large. Select fewer files."
+			: "Could not read the upload. It may be incomplete; please select the files again." }, { status: oversized ? 413 : 400 });
+	}
 	const files = form.getAll("files").filter((f): f is File => f instanceof File);
+	if (files.reduce((total, file) => total + file.size, 0) > MAX_IMPORT_BYTES) {
+		return Response.json({ results: [] as ImportResult[], error: "Too big. Max 25 MB." }, { status: 413 });
+	}
 	if (files.length === 0) {
 		return Response.json({ results: [] as ImportResult[], error: "no files" }, { status: 400 });
 	}

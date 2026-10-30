@@ -33,28 +33,28 @@ const LONG_A = "The light reactions capture energy from sunlight and store it in
 const LONG_B = "ate steps, which the Calvin cycle then spends to fix carbon dioxide into sugars inside the cell";
 
 describe("pdf-markdown — structure", () => {
-	it("turns larger text into headings and joins wrapped prose, undoing hyphen breaks", async () => {
+	it("turns larger text into headings while preserving prose lines and hyphen breaks", async () => {
 		const [page] = await convert(tinyPdf([{
 			runs: [
 				{ text: "Photosynthesis", x: 72, y: 720, size: 20 },
 				...stack([LONG_A, LONG_B, "and starch for storage."], { y: 690 }),
 			],
 		}]));
-		assert.equal(markdownOf(page), `# Photosynthesis\n\n${LONG_A.slice(0, -1)}${LONG_B} and starch for storage.`);
+		assert.equal(markdownOf(page), `# Photosynthesis\n\n${LONG_A}\n\n${LONG_B}\n\nand starch for storage.`);
 	});
 
-	it("joins a link broken after its slash without a space", async () => {
+	it("preserves a link's extracted line break after a slash", async () => {
 		const [page] = await convert(tinyPdf([{ runs: stack(["Fill in the short survey before the end of the week at https://forms.gle/", "zEwAbgswCVXtTnrB8 to help us."], { y: 700 }) }]));
-		assert.match(markdownOf(page), /https:\/\/forms\.gle\/zEwAbgswCVXtTnrB8 to help us\./);
+		assert.match(markdownOf(page), /https:\/\/forms\.gle\/\n\nzEwAbgswCVXtTnrB8 to help us\./);
 	});
 
-	it("keeps a compound's own hyphen at a line break when the document writes it hyphenated elsewhere", async () => {
+	it("leaves compound-word line breaks intact even when an unbroken spelling appears elsewhere", async () => {
 		const [page] = await convert(tinyPdf([{
 			runs: [
 				...stack(["Clinics often use cognitive-behavioral therapy for anxiety and for related disorders today.", "Many patients first try a short course of guided cognitive-", "behavioral therapy with a trained counselor."], { y: 700 }),
 			],
 		}]));
-		assert.match(markdownOf(page), /guided cognitive-behavioral therapy/);
+		assert.match(markdownOf(page), /guided cognitive-\n\nbehavioral therapy/);
 		assert.doesNotMatch(markdownOf(page), /cognitivebehavioral/);
 	});
 
@@ -69,17 +69,20 @@ describe("pdf-markdown — structure", () => {
 		assert.match(md, /\n\nEnzyme Km Vmax\n\nLactase 2\.4 9\.1\n\nCatalase 25 40$/);
 	});
 
-	it("drops a running footer repeated on every page, page numbers included", async () => {
+	it("preserves running footers and their original page numbers", async () => {
 		const pages: TinyPage[] = ["Cells", "Tissues", "Organs"].map((topic, i) => ({
 			runs: [{ text: `${topic} are covered here.`, x: 72, y: 600 }, { text: `Biology 101 - page ${i + 1}`, x: 72, y: 30, size: 8 }],
 		}));
 		const out = await convert(tinyPdf(pages));
-		assert.deepEqual(out.map(markdownOf), ["Cells are covered here.", "Tissues are covered here.", "Organs are covered here."]);
+		for (const [i, page] of out.entries()) {
+			assert.ok(markdownOf(page).includes(["Cells", "Tissues", "Organs"][i]!));
+			assert.ok(markdownOf(page).includes(`Biology 101 - page ${i + 1}`));
+		}
 	});
 
-	it("rejoins a hyphen break after an accented letter (French)", async () => {
+	it("preserves a hyphen break after an accented letter (French)", async () => {
 		const [page] = await convert(tinyPdf([{ runs: stack(["Le commissaire peut examiner selon la pré-", "sente partie."], { y: 700 }) }]));
-		assert.equal(markdownOf(page), "Le commissaire peut examiner selon la présente partie.");
+		assert.equal(markdownOf(page), "Le commissaire peut examiner selon la pré-\n\nsente partie.");
 	});
 
 	it("never takes a heading from large digits or symbols (chart labels, map zones)", async () => {
@@ -99,13 +102,13 @@ describe("pdf-markdown — structure", () => {
 		assert.equal(markdownOf(page), "\\# of pixels used");
 	});
 
-	it("drops margin line numbers written after their lines, but keeps numbered rows written before their labels", async () => {
+	it("keeps margin line numbers and numbered table rows regardless of stream order", async () => {
 		const bill = ["covered platform means", "a social media service", "ages 0 to 5, 6 to 9", "or an online platform", "that connects to the internet"];
 		const [billPage, tablePage] = await convert(tinyPdf([
 			{ runs: bill.flatMap((text, i) => [{ text, x: 150, y: 700 - i * 30 }, { text: String(i + 1), x: 100, y: 700 - i * 30 }]) },
 			{ runs: ["Bank credit", "Securities", "Loans", "Real estate", "Deposits"].flatMap((label, i) => [{ text: String(i + 1), x: 72, y: 700 - i * 30 }, { text: label, x: 86, y: 700 - i * 30 }]) },
 		]));
-		assert.equal(markdownOf(billPage), bill.join("\n\n"));
+		assert.equal(markdownOf(billPage), bill.map((text, i) => `${text} ${i + 1}`).join("\n\n"));
 		assert.match(markdownOf(tablePage), /^1 Bank credit\n\n2 Securities\n\n3 Loans/);
 	});
 
@@ -117,11 +120,39 @@ describe("pdf-markdown — structure", () => {
 		assert.match(markdownOf(page), /60/);
 	});
 
-	it("drops a footer that repeats on 40% of the pages", async () => {
+	it("keeps a footer that repeats on 40% of the pages", async () => {
 		const out = await convert(tinyPdf(["One", "Two", "Three", "Four", "Five"].map((word, i) => ({
 			runs: [{ text: `Page ${word} text.`, x: 72, y: 600 }, ...(i < 2 ? [{ text: "Access for free at openstax.org", x: 72, y: 30, size: 8 }] : [])],
 		}))));
-		assert.deepEqual(out.map(markdownOf), ["Page One text.", "Page Two text.", "Page Three text.", "Page Four text.", "Page Five text."]);
+		for (const [i, word] of ["One", "Two", "Three", "Four", "Five"].entries()) {
+			assert.ok(markdownOf(out[i]).includes(`Page ${word} text.`));
+			assert.equal(markdownOf(out[i]).includes("Access for free at openstax.org"), i < 2);
+		}
+	});
+
+	it("preserves distinct numeric margin statements and matching body text across page selections", async () => {
+		const pdf = tinyPdf([5, 10, 15].map((dose) => ({ runs: [
+			{ text: `Dose ${dose} mg`, x: 72, y: 730 },
+			{ text: "Dose 5 mg", x: 72, y: 500 },
+			{ text: "Study material", x: 72, y: 30 },
+		] })));
+		const all = await convert(pdf.slice());
+		for (const [i, dose] of [5, 10, 15].entries()) {
+			const md = markdownOf(all[i]);
+			assert.ok(md.includes(`Dose ${dose} mg`));
+			assert.equal((md.match(/Dose 5 mg/g) ?? []).length, i === 0 ? 2 : 1);
+			assert.ok(md.includes("Study material"));
+		}
+		assert.equal(markdownOf((await convert(pdf.slice(), [1]))[0]), markdownOf(all[0]));
+	});
+
+	it("keeps adjacent heading lines separate", async () => {
+		const [page] = await convert(tinyPdf([{ runs: [
+			{ text: "First heading line", x: 72, y: 720, size: 20 },
+			{ text: "Second heading line", x: 72, y: 700, size: 20 },
+			...stack([LONG_A, LONG_B], { y: 650 }),
+		] }]));
+		assert.match(markdownOf(page), /^# First heading line\n\n# Second heading line\n\n/);
 	});
 
 	it("strips control characters that some fonts emit for math glyphs", async () => {
@@ -142,7 +173,7 @@ describe("pdf-markdown — slides", () => {
 		assert.equal(markdownOf(page), "# References\n\n- First point\n- Second point");
 	});
 
-	it("nests sub-bullets and joins a bullet's wrapped second line", async () => {
+	it("nests sub-bullets while preserving a bullet's wrapped second line", async () => {
 		const [page] = await convert(tinyPdf([{
 			runs: [
 				{ text: "Grading policy", x: 200, y: 720, size: 44 },
@@ -155,7 +186,7 @@ describe("pdf-markdown — slides", () => {
 		}]));
 		assert.equal(
 			markdownOf(page),
-			"# Grading policy\n\n- Final project: 40%\n  - Milestone: 5%\n  - Read the code book, understand what is academic infraction\n- Late policy",
+			"# Grading policy\n\n- Final project: 40%\n  - Milestone: 5%\n  - Read the code book, understand what is\n\nacademic infraction\n\n- Late policy",
 		);
 	});
 
@@ -231,6 +262,7 @@ describe("pdf-markdown — page kinds", () => {
 	it("converts only the requested pages", async () => {
 		const out = await convert(tinyPdf([1, 2, 3].map((n) => ({ runs: [{ text: `Page ${n} text`, x: 72, y: 700 }] }))), [1, 3]);
 		assert.deepEqual(out.map((p) => p.number), [1, 3]);
+		assert.deepEqual(out.map(markdownOf), ["Page 1 text", "Page 3 text"]);
 	});
 
 	it("separates words in the committed fixture instead of gluing them", async () => {

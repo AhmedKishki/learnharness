@@ -2,9 +2,9 @@ import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist/legacy/build/pdf
 
 /**
  * PDF → Markdown by rule, no model: pdfjs text positions and font sizes become headings,
- * paragraphs and lists. Serves the notes import (whose chunker then splits the Markdown) and
- * the pdf-reader tools. Prototyped against a 14-PDF benchmark (papers, forms, slides, scans,
- * right-to-left text); each rule below names the failure it fixes.
+ * line-separated text and lists. Serves the notes import (whose chunker then splits the Markdown)
+ * and the pdf-reader tools. Preserve extracted lines, words and repeated margin text: the model
+ * interprets the source, rather than relying on deletion or wrapped-line reconstruction here.
  */
 
 export type PdfPage =
@@ -35,13 +35,12 @@ interface Line {
 
 interface PageScan {
 	page: PDFPageProxy;
-	height: number;
 	lines: Line[];
 }
 
 type Block =
 	| { type: "heading"; level: 1 | 2 | 3; text: string }
-	| { type: "item"; depth: number; x0: number; y: number; size: number; text: string }
+	| { type: "item"; depth: number; y: number; text: string }
 	| { type: "paragraph"; text: string };
 
 const BULLET = /^\s*[\u2022\u25CF\u25AA\u2013\u2014\uF0B7-]\s+/;
@@ -55,30 +54,6 @@ const CONTROL = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
 
 const clean = (s: string) => s.replace(COMPAT, (m) => m.normalize("NFKC")).replace(PRIVATE_USE, "").replace(CONTROL, "");
 const roundSize = (l: Line) => Math.round(l.size * 10) / 10;
-// Any lowercase letter counts as a hyphen break, so French "pré-" + "sente" rejoins too.
-const HYPHEN_BREAK = /\p{Ll}-$/u;
-type Join = (a: string, b: string) => string;
-
-/** Join a wrapped line, undoing an end-of-line hyphen break ("intermedi-" + "ate"). The document is the
- * dictionary for compounds: a break at a word's own hyphen keeps it when the text writes that compound
- * hyphenated mid-line more often than closed ("cognitive-" + "behavioral" stays "cognitive-behavioral"). */
-function joiner(lines: readonly Line[]): Join {
-	const hyphenated = new Map<string, number>();
-	const closed = new Map<string, number>();
-	for (const { text } of lines) {
-		for (const w of text.toLowerCase().match(/\p{L}+-\p{L}+/gu) ?? []) hyphenated.set(w, (hyphenated.get(w) ?? 0) + 1);
-		for (const w of text.toLowerCase().match(/\p{L}+/gu) ?? []) closed.set(w, (closed.get(w) ?? 0) + 1);
-	}
-	return (a, b) => {
-		// A link or "and/or" broken after its slash continues without a space.
-		if (/\S\/$/.test(a)) return a + b;
-		if (!HYPHEN_BREAK.test(a) || !/^\p{Ll}/u.test(b)) return `${a} ${b}`;
-		const left = a.match(/\p{L}+-$/u)?.[0].slice(0, -1).toLowerCase() ?? "";
-		const right = b.match(/^\p{L}+/u)?.[0].toLowerCase() ?? "";
-		const compound = (hyphenated.get(`${left}-${right}`) ?? 0) > (closed.get(left + right) ?? 0);
-		return compound ? a + b : a.slice(0, -1) + b;
-	};
-}
 // A heading is mostly letters; figure labels ("∑=") and chart or zone digits ("2 2/3 43") are not.
 const mostlyLetters = (s: string) => (s.match(/\p{L}/gu) ?? []).length >= s.replace(/\s/g, "").length / 2;
 
@@ -124,29 +99,6 @@ function toLine(glyphs: Glyph[]): Line | null {
 		y: first.y,
 		x0: Math.min(...visible.map((g) => g.x)),
 	};
-}
-
-/** Margin line numbers (bills, legal pleadings): a right-aligned column of small integers rising down
- * the page by 1 (by 2 or 3 where blank lines skip one), each written AFTER its line's words, which is
- * why it glues onto the line end ("covered1") and corrupts ranges. Numbered table rows come before their
- * labels and stay; their gap to the words is no different (both ~0.7 font sizes at the closest). Chart
- * labels rising by 10 ("20代", "30代") are not line numbers. */
-function lineNumbers(glyphs: readonly Glyph[]): Set<Glyph> {
-	const columns = new Map<number, Glyph[]>();
-	for (const g of glyphs) {
-		if (!/^\d{1,3}$/.test(g.str.trim()) || g.rotated) continue;
-		const column = Math.round((g.x + g.width) / 4);
-		columns.set(column, [...(columns.get(column) ?? []), g]);
-	}
-	const writtenAfterItsLine = (g: Glyph) =>
-		glyphs.slice(0, glyphs.indexOf(g)).some((o) => o.str.trim() && o.x > g.x && Math.abs(o.y - g.y) <= g.size / 2);
-	const dropped = new Set<Glyph>();
-	for (const column of columns.values()) {
-		const down = [...column].sort((p, q) => q.y - p.y);
-		const rises = down.every((g, i) => i === 0 || [1, 2, 3].includes(Number(g.str) - Number(down[i - 1]!.str)));
-		if (down.length >= 5 && rises && down.every(writtenAfterItsLine)) for (const g of column) dropped.add(g);
-	}
-	return dropped;
 }
 
 const visible = (line: readonly Glyph[]) => line.filter((g) => g.str.trim() && !g.rotated && !g.rtl).sort((p, q) => p.x - q.x);
@@ -204,14 +156,13 @@ function splitColumns(lines: Glyph[][]): Glyph[][] {
 
 async function scanPage(page: PDFPageProxy): Promise<PageScan> {
 	const glyphs = (await page.getTextContent()).items.flatMap((item) => toGlyph(item) ?? []);
-	const margin = lineNumbers(glyphs);
 	const groups: Glyph[][] = [[]];
 	for (const glyph of glyphs) {
-		if (!margin.has(glyph)) groups.at(-1)!.push(glyph);
+		groups.at(-1)!.push(glyph);
 		if (glyph.hasEOL) groups.push([]);
 	}
 	const lines = splitColumns(groups).flatMap((group) => toLine(group) ?? []);
-	return { page, height: page.getViewport({ scale: 1 }).height, lines };
+	return { page, lines };
 }
 
 /** Whether a page without text draws a picture. Asked only of such pages: building the operator list
@@ -219,18 +170,6 @@ async function scanPage(page: PDFPageProxy): Promise<PageScan> {
 async function drawsImage(page: PDFPageProxy): Promise<boolean> {
 	const { OPS } = await import("pdfjs-dist/legacy/build/pdf.mjs");
 	return (await page.getOperatorList()).fnArray.includes(OPS.paintImageXObject);
-}
-
-/** Running headers and footers: the same text (digits normalized) in the top or bottom 12% of at least 40% of
- * the pages. Not half: a textbook's "Access for free at openstax.org" sits on 377 of 755 pages. */
-function removeChrome(pages: PageScan[]): void {
-	const key = (l: Line) => l.text.replace(/\d+/g, "#");
-	const seen = new Map<string, number>();
-	for (const p of pages)
-		for (const k of new Set(p.lines.filter((l) => l.y > p.height * 0.88 || l.y < p.height * 0.12).map(key)))
-			seen.set(k, (seen.get(k) ?? 0) + 1);
-	const chrome = new Set([...seen].filter(([, n]) => n >= Math.max(2, pages.length * 0.4)).map(([k]) => k));
-	for (const p of pages) p.lines = p.lines.filter((l) => !chrome.has(key(l)));
 }
 
 /** Body size: the whole-point size covering the most characters. Whole points, because justified
@@ -257,7 +196,7 @@ function titleFirst(lines: Line[], body: number): Line[] {
 	return [...lines.slice(i, j), ...lines.slice(0, i), ...lines.slice(j)];
 }
 
-function toBlocks(lines: readonly Line[], body: number, fullWidth: number, joinWrapped: Join): Block[] {
+function toBlocks(lines: readonly Line[], body: number): Block[] {
 	// Levels by size relative to the page's body: ranking every size fails on slides, where one 72pt figure label takes level 1.
 	const levelOf = (l: Line): 0 | 1 | 2 | 3 => {
 		if (l.rotated || BULLET.test(l.text) || roundSize(l) < body + 1.95 || !mostlyLetters(l.text)) return 0;
@@ -265,33 +204,22 @@ function toBlocks(lines: readonly Line[], body: number, fullWidth: number, joinW
 	};
 	const blocks: Block[] = [];
 	const listXs: number[] = []; // x of each open list depth
-	let prev: Line | null = null;
 	for (const l of lines) {
 		const level = levelOf(l);
-		const gap = prev !== null && prev.y - l.y > l.size * 1.8;
-		const last = blocks.at(-1);
 		const indent = l.size * 0.3;
 		const bullet = BULLET.test(l.text);
-		if (last?.type === "item" && !gap && !bullet && l.x0 > last.x0 + indent && Math.abs(l.size - last.size) < 0.5) {
-			// Hanging indent: the wrapped part of a bullet starts right of its bullet glyph.
-			last.text = joinWrapped(last.text, l.text);
-		} else if (level) {
-			if (last?.type === "heading" && last.level === level && !gap) last.text += ` ${l.text}`;
-			else blocks.push({ type: "heading", level, text: l.text });
+		if (level) {
+			blocks.push({ type: "heading", level, text: l.text });
 		} else if (bullet) {
 			// A bullet higher up the page than the last one starts a new side-by-side list column.
 			const lastItem = blocks.findLast((b) => b.type === "item");
 			if (lastItem && l.y > lastItem.y + indent) listXs.length = 0;
 			while (listXs.length && l.x0 < listXs.at(-1)! - indent) listXs.pop();
 			if (!listXs.length || l.x0 > listXs.at(-1)! + indent) listXs.push(l.x0);
-			blocks.push({ type: "item", depth: listXs.length - 1, x0: l.x0, y: l.y, size: l.size, text: l.text.replace(BULLET, "") });
-		} else if (prev && (last?.type === "paragraph" || last?.type === "item") && !gap && (prev.text.length >= fullWidth || HYPHEN_BREAK.test(prev.text))) {
-			// Wrapped prose runs near full width; table rows and form labels are short and stay apart.
-			last.text = joinWrapped(last.text, l.text);
+			blocks.push({ type: "item", depth: listXs.length - 1, y: l.y, text: l.text.replace(BULLET, "") });
 		} else {
 			blocks.push({ type: "paragraph", text: l.text });
 		}
-		prev = l;
 	}
 	return blocks;
 }
@@ -314,17 +242,12 @@ function toMarkdown(blocks: readonly Block[]): string {
 		.replace(/\n\n\n/g, "\n");
 }
 
-/** Convert the given pages (default: all). Headers, footers and the body size are judged across the converted pages. */
+/** Convert the given pages (default: all). Body size is judged across the converted pages; repeated text stays. */
 export async function documentToMarkdown(doc: PDFDocumentProxy, pageNumbers?: readonly number[]): Promise<PdfPage[]> {
 	const numbers = pageNumbers ?? Array.from({ length: doc.numPages }, (_, i) => i + 1);
 	const pages: PageScan[] = [];
 	for (const n of numbers) pages.push(await scanPage(await doc.getPage(n)));
-	removeChrome(pages);
-	const all = pages.flatMap((p) => p.lines);
-	const docBody = bodySize(all);
-	const bodyLengths = all.filter((l) => !l.rotated && Math.abs(l.size - docBody) < 0.5).map((l) => l.text.length).sort((a, b) => a - b);
-	const fullWidth = (bodyLengths[Math.floor(bodyLengths.length * 0.75)] ?? 0) * 0.7;
-	const join = joiner(all);
+	const docBody = bodySize(pages.flatMap((p) => p.lines));
 	const out: PdfPage[] = [];
 	for (const p of pages) {
 		const number = p.page.pageNumber;
@@ -336,7 +259,7 @@ export async function documentToMarkdown(doc: PDFDocumentProxy, pageNumbers?: re
 		// never its body. The docBody floor keeps a paper's 8pt reference page from turning 10pt prose into headings.
 		const top = Math.max(...p.lines.map(roundSize));
 		const body = Math.max(docBody, bodySize(p.lines.filter((l) => roundSize(l) < top)));
-		out.push({ kind: "text", number, markdown: toMarkdown(toBlocks(titleFirst(p.lines, body), body, fullWidth, join)) });
+		out.push({ kind: "text", number, markdown: toMarkdown(toBlocks(titleFirst(p.lines, body), body)) });
 	}
 	return out;
 }

@@ -1,16 +1,16 @@
 import { readFileSync } from "node:fs";
 import type { NextConfig } from "next";
+import { MAX_IMPORT_BODY_BYTES } from "./lib/notes-import-limits.ts";
 
 const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string; homepage: string };
 
 const nextConfig: NextConfig = {
 	// Public build metadata only; no new runtime Electron version API.
 	env: { LH_VERSION: pkg.version, LH_HOMEPAGE: pkg.homepage },
-	// proxy.ts buffers every /api request body, cut at 10 MB by default: a
-	// bigger notes upload (a PDF textbook) reached the import route truncated
-	// and failed FormData parsing. The import refuses files over 25 MB in the
-	// browser (components/notes-import.tsx); the extra 1 MB is multipart overhead.
-	experimental: { proxyClientMaxBodySize: "26mb" },
+	// Leave multipart headroom above the 25 MiB file allowance. This is a
+	// proxy buffer, not a rejection gate: the import route also bounds reads,
+	// validates actual file bytes and handles incomplete multipart bodies.
+	experimental: { proxyClientMaxBodySize: MAX_IMPORT_BODY_BYTES },
 	// Desktop target (Electron wrapper, 2026-09-17): standalone output = a
 	// self-contained .next/standalone/server.js the Electron shell spawns
 	// on 127.0.0.1. Harmless for plain web deploys (extra build output).
