@@ -17,9 +17,10 @@
  * healthy. The dock's chips + graph refetch track progress live through
  * /api/graph/status, as with session runs.
  */
-import { convertPdf, extraction, joinPages, NotesImportError } from "@/src/server";
-import { MAX_IMPORT_BODY_BYTES, MAX_IMPORT_BYTES } from "@/lib/notes-import-limits.ts";
+import { convertPdf, extraction, joinPages, NotesImportError, sourceDirectory } from "@/src/server";
+import { MAX_IMPORT_BODY_BYTES, MAX_IMPORT_BYTES, validNotesPath } from "@/lib/notes-import-limits.ts";
 import {
+	emit,
 	ModelsNotConfiguredError,
 	PROVIDER_KEY_MISSING_CODE,
 	ProviderKeyMissingError,
@@ -126,52 +127,46 @@ export async function POST(request: Request) {
 		return Response.json({ results: [] as ImportResult[], error: "no files" }, { status: 400 });
 	}
 
+	// PR198: folder-relative identity, matched to either browser filename form.
+	// Validate every path before conversions, metadata writes, or model calls.
+	const suppliedPaths = form.getAll("paths");
+	if (suppliedPaths.length > 0 && (suppliedPaths.length !== files.length || suppliedPaths.some((p) => typeof p !== "string"))) {
+		return Response.json({ results: [], error: "Invalid import paths" }, { status: 400 });
+	}
+	const paths = suppliedPaths.length > 0 ? suppliedPaths as string[] : files.map((f) => f.name);
+	if (files.some((file, i) => !validNotesPath(paths[i]!, file.name))) {
+		return Response.json({ results: [], error: "Import contains an unsafe or mismatched relative path" }, { status: 400 });
+	}
 	const results: ImportResult[] = [];
-	const queue = files.map((file, requestIndex) => ({ file, requestIndex }));
+	const queue = files.map((file, requestIndex) => ({ file, requestIndex, filePath: paths[requestIndex]! }));
 	const workers = Array.from({ length: Math.min(3, files.length) }, async () => {
 		for (;;) {
 			const next = queue.shift();
 			if (!next) return;
-			const { file, requestIndex } = next;
+			const { file, requestIndex, filePath } = next;
 			try {
 				const notes = await readNotesFile(file);
 				if (notes.kind === "refused") {
-					results.push({ filePath: file.name, requestIndex, outcome: "failed", ok: false, error: notes.error });
+					results.push({ filePath, requestIndex, outcome: "failed", ok: false, error: notes.error });
 					continue;
 				}
-				const stats = await extraction.importNotes({ filePath: file.name, text: notes.text });
-				results.push({ filePath: file.name, requestIndex, outcome: "completed", ok: true, stats, ...(notes.notice ? { notice: notes.notice } : {}) });
+				sourceDirectory.registerImport(filePath);
+				const stats = await extraction.importNotes({ filePath, text: notes.text });
+				results.push({ filePath, requestIndex, outcome: "completed", ok: true, stats, ...(notes.notice ? { notice: notes.notice } : {}) });
 			} catch (err) {
 				if (err instanceof ModelsNotConfiguredError) {
-					results.push({
-						filePath: file.name,
-						ok: false,
-						requestIndex, outcome: "failed",
-						error: err.envelope.error,
-						code: "models_not_configured",
-						missing: err.envelope.missing,
-					});
-					continue;
+					results.push({ filePath, ok: false, requestIndex, outcome: "failed", error: err.envelope.error,
+						code: "models_not_configured", missing: err.envelope.missing });
+				} else if (err instanceof ProviderKeyMissingError) {
+					results.push({ filePath, ok: false, requestIndex, outcome: "failed", error: err.envelope.error,
+						code: PROVIDER_KEY_MISSING_CODE, provider: err.envelope.provider, slots: err.envelope.slots });
+				} else {
+					results.push({ filePath, requestIndex, ok: false,
+						outcome: err instanceof NotesImportError ? err.outcome : "failed",
+						...(err instanceof NotesImportError ? { stats: err.partialStats } : {}),
+						error: err instanceof Error ? err.message : String(err) });
 				}
-				if (err instanceof ProviderKeyMissingError) {
-					results.push({
-						filePath: file.name,
-						ok: false,
-						requestIndex, outcome: "failed",
-						error: err.envelope.error,
-						code: PROVIDER_KEY_MISSING_CODE,
-						provider: err.envelope.provider,
-						slots: err.envelope.slots,
-					});
-					continue;
-				}
-				results.push({
-					filePath: file.name, requestIndex, ok: false,
-					outcome: err instanceof NotesImportError ? err.outcome : "failed",
-					...(err instanceof NotesImportError ? { stats: err.partialStats } : {}),
-					error: err instanceof Error ? err.message : String(err),
-				});
-			}
+			} finally { emit("sources-changed", {}); }
 		}
 	});
 	await Promise.all(workers);

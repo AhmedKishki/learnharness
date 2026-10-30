@@ -67,7 +67,7 @@ import type {
 import { MIN_CLUSTER_SIZE } from "./clusters.ts";
 import { formatChainLine } from "./chains.ts";
 import { attachImpToCommunities, birthSessionOf, birthSessionPartition } from "./session-clusters.ts";
-import { tidySourceLabel } from "./source-label.ts";
+import { sourceFileLabel } from "./source-label.ts";
 import type { ChatStore, GraphStore } from "./ports.ts";
 
 /** The storage ports every graph operation needs, passed explicitly. */
@@ -507,7 +507,7 @@ export function deriveView(graph: DerivedGraph): {
 // ─── the /api/graph payload ──────────────────────────────────────────────────
 
 /** Everything the home graph view needs, in one fetch (shape: contracts). */
-export function graphSnapshot(deps: GraphDeps): GraphSnapshot {
+export function graphSnapshot(deps: GraphDeps, sourceNames: Readonly<Record<string, string>> = {}): GraphSnapshot {
 	const graph = getGraph(deps.graphStore);
 	// The canvas-facing lossy image: propositions + derived implication
 	// nodes, untyped arrows. `chains` (the stored truth) ride along for
@@ -567,12 +567,11 @@ export function graphSnapshot(deps: GraphDeps): GraphSnapshot {
 	const clusters: Cluster[] = communities
 		.filter((community) => community.members.length >= MIN_CLUSTER_SIZE)
 		.map((community) => {
-			// Notes files show a tidied filename (owner, 2026-10-26); the
-			// raw path stays in fileSources for provenance.
+			// Display names never replace the original provenance path.
 			const file = fileSources[community.id];
 			return {
 				id: community.id,
-				label: sessions[community.id] ?? (file === undefined ? null : tidySourceLabel(file)),
+				label: sessions[community.id] ?? (file === undefined ? null : sourceNames[community.id] ?? sourceFileLabel(file)),
 				members: community.members,
 			};
 		});

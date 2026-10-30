@@ -156,18 +156,28 @@ The extractor alone reads source material and submits propositions plus jointly-
 
 ### Notes imports and retry
 
-`POST /api/graph/import` accepts text files and uses the same extractor/auditor/merger, with notes-specific prompts and no message-anchor requirement. Source identity is a hash of the supplied file path/name; the HTTP route uses `File.name`, while direct callers can supply a path. Renaming changes identity; identical names do not become different sources just because their upload positions differ.
+`POST /api/graph/import` accepts text and PDF notes and uses the same extractor/auditor/merger, with notes-specific prompts and no message-anchor requirement. Source identity remains a hash of the supplied file path/name. The optional multipart `paths` entries preserve safe folder-relative paths, matched to each uploaded filename; without them the route uses `File.name`. Changing the picked path changes source identity; changing a display name or organizational placement does not. Identical names do not become different sources just because their upload positions differ.
+
+The shared Files/Folder picker sends one request per supported file through one appendable page-memory queue, with **three files in flight** and immediate refill when any finishes. Further selections join that queue without disabling import. Files over **25 MiB** fail individually; a selection may exceed that total because requests are separate. The server still checks actual aggregate file bytes per request at 25 MiB and bounds the multipart body/proxy at **26 MiB**. PDF conversion, scanner notices and extraction stages are unchanged. The file queue is not persisted across a page reload and introduces no model-concurrency setting.
 
 **Every explicit import processes the whole file, even unchanged text.** There is no content-fingerprint skip or exactly-once import promise. Notes split greedily at line boundaries; a retry reprocesses the file using its existing source digest and identity auditing. Prior merges and usage remain. Same-source overlap is refused as busy before source metadata changes.
 
 The route returns per-upload `requestIndex` and completion outcomes (`completed`, `partial`, `failed`, `aborted`, `busy`). Completion means all chunks completed, not “at least one node was created”; zero findings can be a valid completion. Partial failure/abort preserves committed chunks and reports partial statistics. The UI checks response identity/shape and reports errors; it does not silently turn a failed or ambiguous request into an unchanged-file success. Retry is another explicit import, not automatic background replay.
+
+### Source organization
+
+The chains view inventories all session and imported-source records, including those with no extracted graph content. Individual sources use Book/BookOpen icons; nested organizational folders use Folder/FolderOpen. A source's default imported name is its exact basename minus the final extension, with no tidying or capitalization. Inline session renames use the existing chat title; imported display overrides and folder names/placement live separately in `data/graph/source-organization.json` (lazy, versioned presentation metadata).
+
+Folder imports reconstruct directories containing supported files, not empty/unsupported-only directories. Stable original-directory associations reuse folders after a rename or move, while re-import preserves existing source names and placement. Drag-and-drop changes parent folders only; Name/Props/Created sorting remains authoritative. These folders do not yet appear in the sessions sidebar.
+
+Selecting a non-empty folder selects its graph contents, not source/session records. Graph deletion retains those records and folder containers. Only a structurally empty folder can be removed through Delete, with a distinct confirmation; move its entries out first. Organization reads do not write, and operation-based atomic sidecar updates refuse invalid data or folder cycles instead of resetting it.
 
 ### Read model and graph mutation
 
 `graphSnapshot` reads stored propositions/chains and derives the presentation:
 
 - A single-premise chain draws as a direct arrow. A multi-premise chain creates a geometry junction with premise → junction → conclusion links; the canvas does not expose it as an ordinary visible proposition. Stored chains remain available independently to the chain table.
-- Birth-session clusters derive from proposition provenance, with chat titles/file paths as labels. There is no embedding, Louvain or LLM naming stage. Multi-premise junctions are assigned to displayed clusters after the proposition-count hull filter.
+- Birth-session clusters derive from proposition provenance, with chat titles/imported display names as labels; original paths remain in provenance. There is no embedding, Louvain or LLM naming stage. Multi-premise junctions are assigned to displayed clusters after the proposition-count hull filter.
 - Canvas rendering uses Canvas 2D/d3-zoom over the core layout; server-persisted positions/render settings are separate from device-local camera state. Turning graph rendering off leaves the chain-table presentation and stored knowledge intact.
 - Prober and practice graph readers are gated by `graph.enabled` and `agent.graphTools.enabled`. The teacher registry does not include these readers. Explicit graph selections at session creation are a separate context path, not unbidden automatic injection.
 

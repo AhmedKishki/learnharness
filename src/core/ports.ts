@@ -128,6 +128,12 @@ export interface GraphStore {
 	}): void;
 }
 
+/** Separate from graph ledgers and source identity, for future shared views. */
+export interface SourceOrganizationStore {
+	read(): import("./source-organization.ts").SourceOrganization;
+	write(state: import("./source-organization.ts").SourceOrganization): void;
+}
+
 // ─── JobStore — background sub-agent jobs (data/jobs) ─────────────────────────
 
 export interface CreateJobInit {

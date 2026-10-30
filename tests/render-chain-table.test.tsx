@@ -30,6 +30,7 @@ import { describe, it } from "node:test";
 import { ChainTableBody, ChainTableOverlay } from "../components/chain-table.tsx";
 import type { ChainSort } from "../components/chain-table.tsx";
 import type { GraphChain, GraphNode } from "../src/core/contracts.ts";
+import { ServerEventsProvider } from "../components/server-events.tsx";
 
 /** The fixture graph — two follows-chains + one standalone:
  *  a → c1 ← b  (chain one, conclusion born chat1), d → e (chain two,
@@ -94,8 +95,9 @@ describe("ChainTableBody — clusters (the outermost layer)", () => {
 		assert.ok(html.includes('data-testid="cluster-group-chat1"'), "the chat cluster");
 		assert.ok(html.includes('data-testid="cluster-group-notes1"'), "the notes cluster");
 		assert.ok(html.includes("Ethics lesson"), "chat label");
-		assert.ok(html.includes("notes/raw/ethics.md"), "notes label");
-		assert.ok(html.includes("lucide-folder"), "the closed folder icon");
+		assert.ok(html.includes("ethics"), "exact basename minus extension");
+		assert.ok(!html.includes("notes/raw/ethics.md"), "import path is not a display name");
+		assert.ok(html.includes("lucide-book"), "the closed book icon");
 		assert.ok(!html.includes('data-testid="chain-row-c1"'), "no chain row when collapsed");
 		assert.ok(!html.includes("Premise one"), "no chips when collapsed");
 	});
@@ -324,7 +326,7 @@ describe("ChainTableBody — the fuzzy search (grouped + auto-expand)", () => {
 describe("ChainTableOverlay — the lifted practice pick (owner vision, 2026-10-04)", () => {
 	function overlay(extra: Record<string, unknown> = {}) {
 		return renderToStaticMarkup(
-			React.createElement(ChainTableOverlay, {
+			React.createElement(ServerEventsProvider, { children: React.createElement(ChainTableOverlay, {
 				open: true,
 				nodes: NODES,
 				chains: CHAINS,
@@ -332,7 +334,7 @@ describe("ChainTableOverlay — the lifted practice pick (owner vision, 2026-10-
 				fileSources: {},
 				onClose: () => {},
 				...extra,
-			} as never),
+			} as never) }),
 		);
 	}
 
