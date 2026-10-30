@@ -130,7 +130,12 @@ export function propositionCandidateBatch(
 	propositions: readonly CandidateProposition[],
 	requests: readonly CandidateRequest[],
 ): CandidateBatch {
-	const byId = new Map(propositions.map((proposition) => [proposition.id, proposition]));
+	// Match mergeFindings: accepted repeated ids refer to their FIRST finding.
+	// Searching the last occurrence could return a verdict for another claim.
+	const byId = new Map<string, CandidateProposition>();
+	for (const proposition of propositions) {
+		if (!byId.has(proposition.id)) byId.set(proposition.id, proposition);
+	}
 	const seen = new Set<string>();
 	for (const request of requests) {
 		if (!byId.has(request.id)) throw new Error(`Unknown proposition id "${request.id}". Use an id from the proposed findings.`);

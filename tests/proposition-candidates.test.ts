@@ -103,6 +103,16 @@ describe("proposition candidate retrieval", () => {
 		assert.deepEqual(createPropositionCandidateSearch([node("n", "Amber", "Canoe")])(proposition("p", "the and of")), []);
 	});
 
+	it("conflicting duplicate ids in FINDINGS search the FIRST occurrence, as the merger does", () => {
+		const search = createPropositionCandidateSearch([
+			node("canoe", "Amber", "Canoe"), node("kayak", "Violet", "Kayak"),
+		]);
+		const proposed = [proposition("p1", "Amber canoe"), proposition("p1", "Violet kayak")];
+		const out = propositionCandidateBatch(search, proposed, [{ id: "p1" }]);
+		assert.deepEqual(out.matches[0]!.candidateIds, ["canoe"]);
+		assert.deepEqual(out.candidates.map((candidate) => candidate.id), ["canoe"]);
+	});
+
 	it("rejects unknown ids, repeated ids, and unsafe offsets before returning a batch", () => {
 		const search = createPropositionCandidateSearch([]);
 		const proposed = [proposition("p", "amber")];
