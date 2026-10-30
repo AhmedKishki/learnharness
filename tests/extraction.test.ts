@@ -2098,6 +2098,44 @@ describe("digest-aware serialized extraction (the extractor is the assembler)", 
 		assert.doesNotMatch(digest, /DERIVATIONS ALREADY RECORDED/, "no same-source chains → no chain block");
 	});
 
+	it("the real auditor receives the proposed ids, batched candidate tool and practical-equivalence prompt", async () => {
+		const ledgers = memoryLedgers();
+		ledgers.appendNode({
+			id: "n_seed", name: "Evaporation", statement: "Liquid changes into vapor.", aliases: [],
+			createdAt: "2026-01-01T00:00:00Z", provenance: [{ chatId: "old_source", messageId: "" }],
+		});
+		const auditor = fauxEngine([
+			(context) => {
+				const system = context.messages.find((message) => message.role === "system");
+				assert.ok(system && system.role === "system");
+				assert.ok(system.toolsAdded?.some((tool) => tool.name === "find_candidates"));
+				assert.ok(!system.toolsAdded?.some((tool) => tool.name === "find"));
+				const instructions = typeof system.content === "string" ? system.content : system.content.map((part) => part.text).join("\n");
+				assert.match(instructions, /QUICK, PRACTICAL EQUIVALENCE/);
+				assert.doesNotMatch(instructions, /WHOLE proposition|majority of its clauses/);
+				return fauxAssistantMessage([fauxToolCall("find_candidates", { propositions: [{ id: "p1" }] }, { id: "lookup" })], { stopReason: "toolUse" });
+			},
+			(context) => {
+				const result = context.messages.find((message) => message.role === "toolResult");
+				assert.ok(result && result.role === "toolResult");
+				const text = result.content.find((part) => part.type === "text");
+				assert.ok(text && text.type === "text");
+				const candidates = JSON.parse(text.text);
+				assert.deepEqual(candidates.matches[0].candidateIds, ["n_seed"]);
+				assert.equal(candidates.candidates[0].statement, "Liquid changes into vapor.");
+				return fauxAssistantMessage([fauxToolCall("submit_review", { links: [{ id: "p1", linkTo: "n_seed" }] }, { id: "review" })], { stopReason: "toolUse" });
+			},
+		]);
+		const pipeline = createExtractionPipeline({
+			chatStore, graphStore: ledgers, auditor,
+			extractor: submitModel("submit_findings", { propositions: [{ id: "p1", name: "Vaporization", statement: "Liquid changes into vapor.", aliases: [] }], chains: [] }),
+		});
+		const stats = await pipeline.importNotes({ filePath: "synthetic-candidates.txt", text: "Liquid changes into vapor." });
+		assert.equal(stats.nodes, 0, "the candidate identity is used by the existing merger");
+		assert.equal(getGraph(ledgers).nodes.length, 1);
+		assert.ok(getGraph(ledgers).nodes[0]!.provenance.some((point) => point.chatId === ledgers.readSources()[0]!.id));
+	});
+
 	it("a seeded digest rides the extractor's view: mixed-namespace chains reference existing ids VERBATIM", async () => {
 		const { chatId } = fixtureChat();
 		const ledgers = memoryLedgers();

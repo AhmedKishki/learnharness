@@ -16,6 +16,7 @@ import { auditorGraphTools } from "../src/agent/tools/graph.ts";
 import type { ChatStore, GraphStore, JobStore } from "../src/core/ports.ts";
 import type { ChatSummary } from "../src/core/contracts/chat.ts";
 import type { GraphChain, GraphNode } from "../src/core/contracts/graph.ts";
+import type { CandidateBatch } from "../src/core/proposition-candidates.ts";
 
 // ─── fixtures ────────────────────────────────────────────────────────────────
 
@@ -188,21 +189,32 @@ describe("auditor graph tools", () => {
 	];
 	const { chatStore, graphStore } = fakeStores(nodes);
 
-	it("find: glob over names + statements + aliases, returning id + name + statement + BIRTH SESSION (owner, 2026-09-29)", async () => {
-		const tools = auditorGraphTools({ chatStore, graphStore });
-		const out = (await tools.find!.execute!("tc", { query: "*will to power*" })).details as string;
-		assert.match(out, /1 match\(es\):/);
-		assert.match(out, /- n1 :: Will to power/);
-		assert.match(out, /statement: The will to power is Nietzsche's central drive\./);
-		// The born-in pointer: hits compose with list_propositions.
-		assert.match(out, /born in: c1/);
-		// Statements and aliases hit too — and a bare term gets implicit stars.
-		const byStatement = (await tools.find!.execute!("tc", { query: "living again" })).details as string;
-		assert.match(byStatement, /n2 :: Eternal recurrence/);
-		const byAlias = (await tools.find!.execute!("tc", { query: "power drive" })).details as string;
-		assert.match(byAlias, /n1/);
-		const miss = (await tools.find!.execute!("tc", { query: "*nothing matches this*" })).details as string;
-		assert.equal(miss, 'No existing proposition matches "*nothing matches this*".');
+	it("find_candidates uses the actual findings and returns full deduplicated statements, aliases and source pointers", async () => {
+		const tools = auditorGraphTools({ chatStore, graphStore }, [
+			{ id: "p1", name: "Power drive", statement: "power drive", aliases: [] },
+			{ id: "p2", name: "Power", statement: "Nietzsche's central drive", aliases: [] },
+		]);
+		assert.equal("find" in tools, false, "the auditor's glob interface is replaced; the prober remains separate");
+		const result = await tools.find_candidates!.execute!("tc", { propositions: [{ id: "p1" }, { id: "p2" }] });
+		const out = result.details as CandidateBatch;
+		assert.deepEqual(out.matches.map((match) => match.candidateIds), [["n1"], ["n1"]]);
+		assert.equal(out.candidates.length, 1);
+		assert.equal(out.candidates[0]!.statement, nodes[0]!.statement);
+		assert.deepEqual(out.candidates[0]!.sessions, ["c1"]);
+		assert.ok(out.candidates[0]!.matchedAliases.includes("power drive"));
+		assert.deepEqual(result.content, [{ type: "text", text: JSON.stringify(out) }], "the model receives the structured result, not just record metadata");
+		const repeat = await tools.find_candidates!.execute!("tc2", { propositions: [{ id: "p1" }, { id: "p2" }] });
+		assert.deepEqual(repeat.details, out, "there is no hidden cross-call suppression");
+	});
+
+	it("a candidate tool instance never reuses another audit's graph or findings", async () => {
+		const first = auditorGraphTools({ chatStore, graphStore }, [{ id: "p1", name: "Recurrence", statement: "living again", aliases: [] }]);
+		const second = auditorGraphTools(fakeStores([]), [{ id: "p2", name: "Recurrence", statement: "living again", aliases: [] }]);
+		const one = (await first.find_candidates!.execute!("tc", { propositions: [{ id: "p1" }] })).details as CandidateBatch;
+		const two = (await second.find_candidates!.execute!("tc", { propositions: [{ id: "p2" }] })).details as CandidateBatch;
+		assert.equal(one.candidates[0]!.id, "n2");
+		assert.deepEqual(two.candidates, []);
+		await assert.rejects(second.find_candidates!.execute!("bad", { propositions: [{ id: "p1" }] }), /Unknown proposition id/);
 	});
 
 	it("list_sessions: names, kinds, counts, ids — NO timestamps (identity work needs content, not chronology)", async () => {
