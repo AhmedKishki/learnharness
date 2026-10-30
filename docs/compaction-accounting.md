@@ -2,10 +2,11 @@
 
 ## Retention
 
-`src/core/compaction.ts` locally ports the cutoff-selection behavior and relevant
-message-size heuristic from **@earendil-works/pi-coding-agent 1.4.0**. There is no
-coding-agent dependency. Upgrade this port deliberately; the native golden
-fixtures are in `tests/compaction-native-parity.test.ts`.
+[`src/core/compaction.ts`](../src/core/compaction.ts) locally ports the
+cutoff-selection behavior and relevant message-size heuristic from
+**@earendil-works/pi-coding-agent 1.4.0**. There is no coding-agent dependency.
+Upgrade this port deliberately; the native golden fixtures are in
+[`tests/compaction-native-parity.test.ts`](../tests/compaction-native-parity.test.ts).
 
 Walk backward to the approximately 20,000-token retained-tail budget, then select
 the nearest valid user/assistant boundary at or after the crossing. Never start
@@ -41,19 +42,51 @@ The numerator is the latest qualifying completed conversation response's native
 Pi `input + output + cacheRead + cacheWrite`. Reasoning is already inside output;
 `totalTokens` is not an override. Partial stream updates, errors, aborts, invalid
 counts, and all-zero usage do not replace the last measurement. A successful
-compaction marker invalidates earlier measurements: show `? / maximum` until a
-new qualifying response completes. Summarizer usage never supplies this meter.
+compaction marker invalidates earlier measurements: show an unknown numerator
+(`? / maximum` when a maximum is known) until a new qualifying response completes.
+Summarizer usage never supplies this meter.
 
 The denominator follows the selected model's catalog limit, independently of the
-last numeric measurement. Changing models preserves that numerator. No catalog
-limit means no invented denominator; no percentage display is added.
+last numeric measurement. Custom models use their configured/reported/fallback
+budget. **Claude Code is the exception:** its aliases have no public catalog
+maximum. Only the latest response's valid CLI-reported effective budget for the
+session's matching selected model supplies a denominator; it may reflect CLI
+auto-compaction rather than the nominal model window. A fresh response without
+metadata, or a compaction marker, invalidates the old CLI report. Changing models
+preserves the numerator but never borrows another model's CLI denominator. Missing
+limits mean usage-only display, not an invented maximum; no percentage is added.
+
+This displayed measurement is distinct from the **next-request compaction
+estimate**. [`src/server/compaction.ts`](../src/server/compaction.ts) anchors that
+estimate on reported usage and estimates subsequent messages, falling back to the
+active transcript heuristic plus system prompt when no anchor exists. Its trigger
+is the smaller of the configured threshold and catalog window minus reserve; an
+unknown catalog window uses the configured threshold alone. The CLI's display
+metadata does not become a catalog limit or change that trigger. See the
+[meter implementation](../src/core/context-usage.ts),
+[CLI metadata reader](../src/core/native-messages.ts), and
+[display limit selection](../components/stats-bar.tsx).
 
 ## Spending
 
-`src/server/pricing.ts` uses Pi AI's full, key-independent catalog and public
-`calculateCost` on a new usage object. The browser receives derived costs, not a
-second calculator/rate table. Totals are estimates using the currently shipped
-catalog, not provider invoices; catalog updates can reprice history.
+[`src/server/pricing.ts`](../src/server/pricing.ts) uses Pi AI's full,
+key-independent API catalog and public `calculateCost` on a new usage object.
+The browser receives derived costs, not a second calculator/rate table. Totals
+are estimates using the currently shipped catalog, not provider invoices;
+catalog updates can reprice history. Saved native messages are not mutated.
+
+| Route | Accounting meaning |
+| --- | --- |
+| Native API providers | Estimate dollars when the catalog model and required usage detail are available. |
+| Built-in subscription connections | Explicit logical provider IDs identify plan usage, not API dollars. This includes ChatGPT and the native subscription providers, not models merely named after them. |
+| [Claude Code](claude-code.md) | Retain CLI-reported tokens, but leave dollar costs unpriced. The UI labels CLI billing; the CLI owns routing/authentication and there is no subscription-only guarantee. Successful CLI result-line dollar totals are not imported. |
+| [Custom/local endpoint](custom-providers.md) | Retain token usage, but leave prices unknown/unpriced, even for a locally hosted model. Internal zero-rate placeholders do not mean free inference; there is no rates editor. |
+
+Mixed sessions sum only known API-dollar estimates and retain subscription/CLI
+labels alongside them. A CLI or custom turn remains unpriced in the accounting
+fold; it is not reclassified as subscription use or silently valued at $0. A
+CLI-reported cost outside LearnHarness would not establish API charges, plan
+entitlements, or the final bill.
 
 Saved input is Pi-normalized **fresh input**, disjoint from cache buckets. Never
 subtract cached reads from it again or migrate old logs as raw inclusive prompt
@@ -62,8 +95,15 @@ background-job calls. Older write-bearing records with a lost retention split,
 and tier-priced multi-call jobs with only aggregate usage, remain unpriced when
 the lost detail can change the answer. They are not reconstructed from totals.
 Flat-rate historical jobs with sufficient counts remain priceable. Missing models
-or required usage stay unpriced; ChatGPT subscriptions remain plan usage, not
-API dollars. Summarizer costs continue to count toward session spending.
+or required usage stay unpriced. Summarizer usage continues to count toward session
+spending under the same provider-specific pricing rules, but never supplies the
+conversation meter.
+
+Regression references: [meter completion/invalidation](../tests/context-usage.test.ts),
+[Pi pricing parity and historical precision](../tests/pricing-native-parity.test.ts),
+[subscription identities and mixed totals](../tests/subscription-usage.test.tsx),
+[CLI usage/UI](../tests/claude-code-usage.test.tsx), and
+[custom runtime/catalog semantics](../tests/custom-provider-lifecycle.test.ts).
 
 ## Upstream attribution
 

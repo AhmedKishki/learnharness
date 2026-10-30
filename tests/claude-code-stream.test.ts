@@ -575,15 +575,36 @@ test("cwd is an empty temp dir; prompt and mcp config live in a separate private
 	assert.match(mcpConfig.mcpServers.learnharness?.url ?? "", /^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
 });
 
-test("spawns with the model alias, effort, bridge tools, MCP_TOOL_TIMEOUT and the caller's HOME", async (t) => {
+test("spawns with the model alias, effort, bridge tools, MCP timeout headroom and the caller's HOME", async (t) => {
 	const { calls } = await runScenario(t, readFixtureLines("text.jsonl"), { reasoning: "xhigh" });
 	const call = getOnlyCall(calls);
 	assert.equal(getFlagValue(call.args, "--model"), "opus");
 	assert.equal(getFlagValue(call.args, "--effort"), "xhigh");
 	assert.equal(getFlagValue(call.args, "--allowedTools"), "mcp__learnharness__read,mcp__learnharness__get_weather");
 	assert.equal(call.env.MCP_TOOL_TIMEOUT, "1800000");
+	assert.equal(call.env.CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT, "1800000");
+	assert.equal(LIVE_PROCESS_IDLE_TIMEOUT_MS, 600000, "learner-wait retention stays at ten minutes");
+	for (const name of ["MCP_TOOL_TIMEOUT", "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"]) {
+		assert.ok(Number(call.env[name]) > LIVE_PROCESS_IDLE_TIMEOUT_MS, `${name} must outlast LearnHarness retention`);
+	}
 	assert.equal(call.env.HOME, process.env.HOME);
 	assert.equal(call.env.CLAUDE_CONFIG_DIR, process.env.CLAUDE_CONFIG_DIR);
+});
+
+test("MCP timeout headroom overrides inherited shorter timeouts", async (t) => {
+	const names = ["MCP_TOOL_TIMEOUT", "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"] as const;
+	const saved = names.map((name) => [name, process.env[name]] as const);
+	t.after(() => {
+		for (const [name, value] of saved) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+	});
+	for (const name of names) process.env[name] = "300000";
+
+	const { calls } = await runScenario(t, readFixtureLines("text.jsonl"));
+	const call = getOnlyCall(calls);
+	for (const name of names) assert.equal(call.env[name], "1800000");
 });
 
 test("preserves existing CLI environment authentication without a subscription guarantee", async (t) => {

@@ -42,6 +42,8 @@ export type RunClaude = (args: string[], options: RunClaudeOptions) => ClaudeChi
 // A held MCP call lasts until pi calls back with the tool result, which for a question tool is
 // whenever the learner answers; this must outlast the live-process idle timeout so the CLI never
 // times out first.
+// A held call sends no progress, so the CLI's separate idle timeout (300 s by default) needs
+// the same bound, or it aborts an unanswered question first.
 const MCP_TOOL_TIMEOUT_MS = 30 * 60_000;
 
 const PRIVATE_FILE_MODE = 0o600;
@@ -613,7 +615,7 @@ function continueLiveProcess(turn: ClaudeTurn, owner: symbol, sessionId: string 
 function toClaudeEnv(): NodeJS.ProcessEnv {
 	// Preserve native CLI auth/routing, including launch-environment credentials.
 	// Claude Code chooses the account and billing method, not LearnHarness.
-	return { ...externalCliEnv(), MCP_TOOL_TIMEOUT: String(MCP_TOOL_TIMEOUT_MS) };
+	return { ...externalCliEnv(), MCP_TOOL_TIMEOUT: String(MCP_TOOL_TIMEOUT_MS), CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: String(MCP_TOOL_TIMEOUT_MS) };
 }
 
 async function startProcess(
