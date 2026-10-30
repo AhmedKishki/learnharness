@@ -64,10 +64,13 @@ This is a **trusted local/shared developer-server mode**, not multi-user hosting
 | Agent prompts and tool registries | `src/agent/teacher-agent.ts`, `prompt-segments.ts`, `tools.ts`, `tools/practice.ts` |
 | Async workers and result delivery | `src/agent/subagents/runner.ts`, `src/server/jobs.ts` |
 | Graph extraction, coverage and derivation | `src/agent/subagents/extraction.ts`, `src/core/coverage.ts`, `graph.ts` |
+| Notes/PDF import and local conversion | `components/notes-import.tsx`, `app/api/graph/import/route.ts`, `src/agent/subagents/pdf-markdown.ts` |
 | Stores and resolved settings | `src/server/stores.ts`, `src/store/`, `src/core/settings-resolution.ts` |
 | Provider/model configuration | `src/agent/models.ts`, `src/server/model-catalog.ts`, linked provider references above |
 | Push notifications | `src/core/events.ts`, `src/server/events-stream.ts`, `components/server-events.tsx` |
 | Desktop launch/security/packaging | `electron/main.cjs`, `scripts/build-server.mjs`, [desktop release](desktop-release.md) |
+
+PDF note imports use the same extraction pipeline after local conversion to page-marked Markdown by `src/agent/subagents/pdf-markdown.ts`.
 
 The import law is the specific set of ESLint zones in `eslint.config.mjs`: shell imports into `src/` go through the designated barrels; core cannot import the IO layers; agents cannot import server/store adapters. It does not mechanically enforce every architectural convention. Read the relevant installed Next guide under `node_modules/next/dist/docs/` before changing framework-facing code.
 

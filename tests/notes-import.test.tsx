@@ -6,7 +6,7 @@ import { afterEach, it } from "node:test";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseHTML } from "linkedom";
-import { NotesImportErrors, parseNotesImportResults, postNotesImport, useNotesImport, type NotesImportResult } from "../components/notes-import.tsx";
+import { MAX_IMPORT_BYTES, NotesImportErrors, NotesImportNotices, parseNotesImportResults, postNotesImport, useNotesImport, type NotesImportResult } from "../components/notes-import.tsx";
 
 // Real hook/React state, isolated DOM and wholly stubbed import transport.
 const dom = parseHTML("<html><body></body></html>");
@@ -61,6 +61,7 @@ for (const [name, results] of [
 	["invalid code", [{ ...completed(), code: 42 }, completed(1)]],
 	["invalid missing", [{ ...completed(), missing: [42] }, completed(1)]],
 	["invalid error", [{ ...completed(), error: 42 }, completed(1)]],
+	["invalid notice", [{ ...completed(), notice: 42 }, completed(1)]],
 	["missing failure error", [{ ...completed(), ok: false, outcome: "failed" }, completed(1)]],
 ] as const) it(`malformed response (${name}) is rejected for retry`, () => {
 	assert.throws(() => parseNotesImportResults({ results }, files), /Please retry/);
@@ -97,7 +98,7 @@ for (const outcome of ["completed", "failed", "partial", "aborted", "busy"] as c
 	assert.equal(finishes, 1);
 	const html = host!.innerHTML;
 	assert.doesNotMatch(html, /<button|<section|<ul|border|bg-card|rounded|shadow|Retry|Dismiss|Import complete|new propositions|Saved changes|Import stopped|already being imported/);
-	assert.deepEqual(Object.keys(current).sort(), ["errors", "importing", "onImportFiles"], "no retained rows, Files, retry or dismiss API");
+	assert.deepEqual(Object.keys(current).sort(), ["errors", "importing", "notices", "onImportFiles"], "no retained rows, Files, retry or dismiss API");
 	if (outcome === "completed") {
 		assert.equal(html, "");
 		assert.deepEqual(current.errors, []);
@@ -197,4 +198,60 @@ it("actual attempts clear errors immediately, guard synchronous reentry, preserv
 	assert.equal(starts, 3);
 	assert.equal(finishes, 3);
 	assert.equal(host!.innerHTML, "");
+});
+
+it("completed imports with a notice list it in selection order; failures and plain successes add none", async () => {
+	const selected = [new File(["a"], "a.pdf"), new File(["b"], "b.md"), new File(["c"], "c.pdf")];
+	const results: NotesImportResult[] = [
+		{ requestIndex: 2, filePath: "c.pdf", ok: true, outcome: "completed", stats: { nodes: 1 }, notice: "Scanned pages may have errors." },
+		{ requestIndex: 1, filePath: "b.md", ok: true, outcome: "completed", stats: { nodes: 1 } },
+		{ requestIndex: 0, filePath: "a.pdf", ok: false, outcome: "failed", error: "OCR not supported yet." },
+	];
+	assert.deepEqual(parseNotesImportResults({ results }, selected), results);
+	globalThis.fetch = async () => Response.json({ results });
+	await mount();
+	await submit(selected);
+	assert.deepEqual(current.notices, ["c.pdf: Scanned pages may have errors."]);
+	assert.deepEqual(current.errors, ["a.pdf: OCR not supported yet."]);
+});
+
+for (const [status, error] of [
+	[413, "Too big. Max 25 MB."],
+	[413, "Import request is too large. Select fewer files."],
+	[400, "Could not read the upload. It may be incomplete; please select the files again."],
+] as const) it(`server upload refusal remains readable in the client (${error})`, async () => {
+	globalThis.fetch = async () => Response.json({ results: [], error }, { status });
+	await mount();
+	await submit();
+	assert.deepEqual(current.errors, files.map((file) => `${file.name}: Import request failed (HTTP ${status}): ${error} Please retry the file.`));
+	assert.deepEqual(current.notices, []);
+	assert.equal(current.importing, false);
+});
+
+it("notices render as muted status lines, not alerts", () => {
+	assert.equal(renderToStaticMarkup(<NotesImportNotices notices={[]} />), "");
+	const html = renderToStaticMarkup(<NotesImportNotices notices={["c.pdf: Scanned pages may have errors."]} />);
+	assert.match(html, /role="status"/);
+	assert.match(html, /text-muted-foreground/);
+	assert.doesNotMatch(html, /role="alert"|text-red/);
+});
+
+it("a pick over 25 MB in total is refused before upload, one file or several; a smaller pick still goes up", async () => {
+	const half = new Uint8Array(MAX_IMPORT_BYTES / 2 + 1);
+	const sent: string[][] = [];
+	globalThis.fetch = async (_url, init) => {
+		const form = init?.body;
+		assert.ok(form instanceof FormData);
+		sent.push(form.getAll("files").map((f) => (f instanceof File ? f.name : "")));
+		return Response.json({ results: [{ ...completed(), filePath: "a.pdf" }] });
+	};
+	await mount();
+	await submit([new File([new Uint8Array(MAX_IMPORT_BYTES + 1)], "textbook.pdf")]);
+	await submit([new File([half], "a.pdf"), new File([half], "b.pdf")]);
+	assert.deepEqual(sent, [], "nothing over the cap leaves the browser");
+	assert.deepEqual(current.errors, ["a.pdf: Too big. Max 25 MB.", "b.pdf: Too big. Max 25 MB."]);
+	assert.equal(starts, 0, "a refused pick starts no import");
+	await submit([new File([half], "a.pdf")]);
+	assert.deepEqual(sent, [["a.pdf"]]);
+	assert.deepEqual(current.errors, []);
 });
