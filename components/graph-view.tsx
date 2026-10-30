@@ -64,9 +64,9 @@
  */
 
 import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { NotesImportControl, NotesImportErrors, useNotesImport } from "@/components/notes-import.tsx";
+import { NotesImportErrors, NotesImportNotices, useNotesImport } from "@/components/notes-import.tsx";
 import Link from "next/link";
-import { FileTextIcon, ListTreeIcon, Loader2Icon, SearchIcon, SettingsIcon, WaypointsIcon } from "lucide-react";
+import { FileTextIcon, ListTreeIcon, Loader2Icon, SearchIcon, SettingsIcon, UploadIcon, WaypointsIcon } from "lucide-react";
 import { incrementalLayout, propositionSessionHref, type GraphCostSummary, type GraphNode, type GraphSnapshot } from "@/src/core";
 import { planCostLabel } from "@/components/usage-format";
 import { GraphCanvasRenderer, type GraphRenderSettings } from "./graph-canvas.ts";
@@ -844,6 +844,7 @@ export function GraphChromeRow({
 	noMatch,
 	importing,
 	searchInputRef,
+	fileInputRef,
 	onImportFiles,
 	settings,
 	changeSettings,
@@ -857,6 +858,7 @@ export function GraphChromeRow({
 	noMatch: boolean;
 	importing: boolean;
 	searchInputRef: React.RefObject<HTMLInputElement | null>;
+	fileInputRef: React.RefObject<HTMLInputElement | null>;
 	onImportFiles: (files: FileList | null) => void;
 	settings: GraphRenderSettings;
 	changeSettings: (update: (cur: RenderSettings) => RenderSettings) => void;
@@ -911,7 +913,37 @@ export function GraphChromeRow({
 			)}
 			{/* Import notes — its own container (36px, header band); ALWAYS
 			    rendered (the empty-graph ruling above — the entry point). */}
-			<NotesImportControl importing={importing} onImportFiles={onImportFiles} />
+			<div className="shrink-0 rounded-xl border bg-card/85 px-1 py-[3px] shadow-lg backdrop-blur">
+				<input
+					ref={fileInputRef}
+					type="file"
+					multiple
+					accept=".md,.markdown,.txt,.pdf"
+					className="hidden"
+					onChange={(e) => {
+						onImportFiles(e.target.files);
+						e.target.value = ""; // allow re-picking the same file
+					}}
+				/>
+				<Hint
+					// The one button whose action isn't obvious from its label:
+					// the missing fact is where imports go (owner, subtlety
+					// round 2026-09-25).
+					label="Import notes into the graph"
+					side="bottom"
+				>
+					<button
+						type="button"
+						disabled={importing}
+						onClick={() => fileInputRef.current?.click()}
+						data-testid="import-notes"
+					className="flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent disabled:opacity-50"
+				>
+						<UploadIcon className="size-3" />
+						{importing ? "Importing…" : "Import notes…"}
+					</button>
+				</Hint>
+			</div>
 			{!isEmpty && (
 				// Rendering settings — own component; the gear toggles it. The
 				// gear sits at the far right (owner, round 3) so its panel drops
@@ -1067,6 +1099,7 @@ export function GraphView({
 	// Notes import (the format-agnostic front door): file picker → POST
 	// /api/graph/import; the runs surface in the status chips below, and the
 	// graph refetches when they finish (the runs-empty transition).
+	const fileInputRef = useRef<HTMLInputElement>(null);
 	// The dock's start-site nudge (accuracy wave, 2026-09-19): the import
 	// POST awaits the WHOLE pipeline server-side, so the run registers long
 	// before the response — nudge at click and again at +600ms to catch the
@@ -1575,6 +1608,7 @@ export function GraphView({
 					noMatch={snapshot !== null && visibleIds.size === 0 && query.trim() !== ""}
 					importing={importing}
 					searchInputRef={searchInputRef}
+					fileInputRef={fileInputRef}
 					onImportFiles={onImportFiles}
 					settings={settings}
 					changeSettings={changeSettings}
@@ -1583,6 +1617,7 @@ export function GraphView({
 			</div>
 
 			<NotesImportErrors errors={notesImport.errors} />
+			<NotesImportNotices notices={notesImport.notices} />
 			{/* Top-right tail (owner, 2026-09-20): the pipeline cost number —
 			    just a number, hover-highlighted, dropdown breakdown — then
 			    the running-pipeline pills under it. Lives BELOW the actions
