@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useLayoutEffect, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { joinDictation, useDictationTarget } from "@/components/dictation";
 import { PathInput } from "@/components/path-input";
 
@@ -41,13 +41,17 @@ export function ReadingThinkingField({
 	claim: boolean;
 }) {
 	const [draft, setDraft] = useState(value);
-	useLayoutEffect(() => { setDraft(value); }, [revision, value]);
+	// Appends may arrive back-to-back before React commits. Like Chat's
+	// submit mirror, this ref includes every edit synchronously.
+	const draftRef = useRef(value);
+	useLayoutEffect(() => { draftRef.current = value; setDraft(value); }, [revision, value]);
 	const applyDraft = useCallback((next: string) => {
+		draftRef.current = next;
 		setDraft(next);
 		onChange(next);
 	}, [onChange]);
 	useDictationTarget(
-		useCallback((text: string) => applyDraft(joinDictation(draft, text)), [draft, applyDraft]),
+		useCallback((text: string) => applyDraft(joinDictation(draftRef.current, text)), [applyDraft]),
 		claim,
 	);
 	return (
