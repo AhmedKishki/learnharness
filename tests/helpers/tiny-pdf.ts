@@ -13,8 +13,8 @@ export interface Run {
 
 export interface TinyPage {
 	runs?: Run[];
-	/** A full-page picture (one gray pixel stretched over the page). */
-	image?: boolean;
+	/** A full-page picture: ordinary XObject, stencil mask, or inline bitmap. */
+	image?: boolean | "mask" | "inline";
 }
 
 const WIDTH = 612;
@@ -34,7 +34,8 @@ function pdfString(text: string): string {
 
 function content(page: TinyPage): string {
 	const ops: string[] = [];
-	if (page.image) ops.push(`q ${WIDTH} 0 0 ${HEIGHT} 0 0 cm /Im1 Do Q`);
+	if (page.image === "inline") ops.push(`q ${WIDTH} 0 0 ${HEIGHT} 0 0 cm BI /W 2 /H 2 /CS /G /BPC 8 ID \x80\x40\x40\x80 EI Q`);
+	else if (page.image) ops.push(`q ${WIDTH} 0 0 ${HEIGHT} 0 0 cm /${page.image === "mask" ? "Mask" : "Im1"} Do Q`);
 	for (const run of page.runs ?? []) {
 		const matrix = run.rotated ? `0 1 -1 0 ${run.x} ${run.y}` : `1 0 0 1 ${run.x} ${run.y}`;
 		ops.push(`BT /F1 ${run.size ?? 10} Tf ${run.invisible ? 3 : 0} Tr ${matrix} Tm ${pdfString(run.text)} Tj ET`);
@@ -55,13 +56,16 @@ export function tinyPdf(pages: readonly TinyPage[]): Uint8Array<ArrayBuffer> {
 		"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 1 >>\nstream\n\x80\nendstream",
 		`<< /Length ${TO_UNICODE.length} >>\nstream\n${TO_UNICODE}\nendstream`,
 	];
+	const maskId = 6 + pages.length * 2;
 	for (const [i, page] of pages.entries()) {
 		const stream = content(page);
 		objects.push(
-			`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${WIDTH} ${HEIGHT}] /Resources << /Font << /F1 3 0 R >> /XObject << /Im1 4 0 R >> >> /Contents ${7 + i * 2} 0 R >>`,
+			`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${WIDTH} ${HEIGHT}] /Resources << /Font << /F1 3 0 R >> /XObject << /Im1 4 0 R /Mask ${maskId} 0 R >> >> /Contents ${7 + i * 2} 0 R >>`,
 			`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
 		);
 	}
+	// Two distinct stencil rows avoid pdfjs's solid-color-mask fast path.
+	objects.push("<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ImageMask true /BitsPerComponent 1 /Length 2 >>\nstream\n\x80\x40\nendstream");
 	let pdf = "%PDF-1.4\n";
 	const offsets: number[] = [];
 	for (const [i, body] of objects.entries()) {

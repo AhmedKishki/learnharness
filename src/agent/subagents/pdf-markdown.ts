@@ -169,7 +169,17 @@ async function scanPage(page: PDFPageProxy): Promise<PageScan> {
  * was two thirds of the conversion time when every page paid for it. */
 async function drawsImage(page: PDFPageProxy): Promise<boolean> {
 	const { OPS } = await import("pdfjs-dist/legacy/build/pdf.mjs");
-	return (await page.getOperatorList()).fnArray.includes(OPS.paintImageXObject);
+	const imageOps = new Set([
+		OPS.paintImageXObject,
+		OPS.paintImageXObjectRepeat,
+		OPS.paintInlineImageXObject,
+		OPS.paintInlineImageXObjectGroup,
+		OPS.paintImageMaskXObject,
+		OPS.paintImageMaskXObjectGroup,
+		OPS.paintImageMaskXObjectRepeat,
+		OPS.paintSolidColorImageMask,
+	]);
+	return (await page.getOperatorList()).fnArray.some((op) => imageOps.has(op));
 }
 
 /** Body size: the whole-point size covering the most characters. Whole points, because justified
@@ -242,12 +252,11 @@ function toMarkdown(blocks: readonly Block[]): string {
 		.replace(/\n\n\n/g, "\n");
 }
 
-/** Convert the given pages (default: all). Body size is judged across the converted pages; repeated text stays. */
+/** Convert the given pages (default: all). Formatting is page-local so search and selected reads agree. */
 export async function documentToMarkdown(doc: PDFDocumentProxy, pageNumbers?: readonly number[]): Promise<PdfPage[]> {
 	const numbers = pageNumbers ?? Array.from({ length: doc.numPages }, (_, i) => i + 1);
 	const pages: PageScan[] = [];
 	for (const n of numbers) pages.push(await scanPage(await doc.getPage(n)));
-	const docBody = bodySize(pages.flatMap((p) => p.lines));
 	const out: PdfPage[] = [];
 	for (const p of pages) {
 		const number = p.page.pageNumber;
@@ -255,10 +264,11 @@ export async function documentToMarkdown(doc: PDFDocumentProxy, pageNumbers?: re
 			out.push({ kind: (await drawsImage(p.page)) ? "image-only" : "empty", number });
 			continue;
 		}
-		// Each slide has its own body (bullets at 24pt, credits at 8pt); the page's largest size is its title,
-		// never its body. The docBody floor keeps a paper's 8pt reference page from turning 10pt prose into headings.
+		// Judge the body below the page's largest size (often its title), falling
+		// back to the page's dominant size for uniform text. Never depend on which
+		// other pages were requested: that would change title order and search lines.
 		const top = Math.max(...p.lines.map(roundSize));
-		const body = Math.max(docBody, bodySize(p.lines.filter((l) => roundSize(l) < top)));
+		const body = bodySize(p.lines.filter((l) => roundSize(l) < top)) || bodySize(p.lines);
 		out.push({ kind: "text", number, markdown: toMarkdown(toBlocks(titleFirst(p.lines, body), body)) });
 	}
 	return out;

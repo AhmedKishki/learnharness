@@ -94,6 +94,31 @@ describe("pdf-ops — the pdfjs text layer", () => {
 		}
 	});
 
+	it("a heterogeneous-font page has identical search lines and selected/full extraction order", async () => {
+		const file = path.join(os.tmpdir(), `pdf-ops-selection-${process.pid}.pdf`);
+		fs.writeFileSync(file, tinyPdf([
+			{ runs: Array.from({ length: 6 }, (_, i) => ({ text: `Ordinary prose line ${i} dominates the document's font statistics.`, x: 72, y: 700 - i * 12 })) },
+			{ runs: [
+				{ text: "Baseline", x: 72, y: 600, size: 24 },
+				{ text: "Caveat", x: 72, y: 560, size: 24 },
+				{ text: "Experimental conditions", x: 72, y: 720, size: 44 },
+			] },
+		]));
+		try {
+			const selected = await pdfExtract(file, "2");
+			const full = await pdfExtract(file, "all");
+			assert.equal(selected, `--- Page 2 ---\n${full.split("--- Page 2 ---\n")[1]}`);
+			const { hits, pageTexts } = await pdfSearch(file, "Baseline", { literal: true, contextLines: 0 });
+			assert.equal(hits.length, 1);
+			assert.equal(hits[0]!.page, 2);
+			assert.equal(hits[0]!.line, 3);
+			assert.equal(selected.split("\n").slice(1)[hits[0]!.line - 1], "Baseline");
+			assert.equal(selected, `--- Page 2 ---\n${pageTexts.get(2)}`);
+		} finally {
+			fs.rmSync(file, { force: true });
+		}
+	});
+
 	it("pdfProbe accepts the fixture and rejects garbage", async () => {
 		await pdfProbe(FIXTURE); // resolves
 		const garbage = path.join(import.meta.dirname, "fixtures", "not-a-pdf.txt");

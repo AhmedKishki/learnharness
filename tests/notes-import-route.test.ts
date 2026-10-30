@@ -163,6 +163,16 @@ it("PDF notices count only image-only pages, not blanks, and preserve the scanne
 	assert.ok(results.every((r: { ok: boolean }) => r.ok));
 });
 
+for (const image of ["mask", "inline"] as const) it(`mixed PDF notices include textless ${image} image pages`, async () => {
+	extraction.importNotes = async () => ({ nodes: 0, chains: 0 });
+	const response = await POST(upload([{ name: "mixed.pdf", bytes: tinyPdf([
+		{ runs: [{ text: "Readable text", x: 72, y: 600 }] }, { image },
+	]) }]));
+	const { results } = await response.json();
+	assert.equal(results[0].outcome, "completed");
+	assert.equal(results[0].notice, "Scanned pages may have errors. Skipped 1 image-only page; OCR is not supported.");
+});
+
 for (const split of [false, true]) it(`server refuses actual file bytes over 25 MiB (${split ? "aggregate" : "single file"}) before the pipeline`, async () => {
 	let calls = 0;
 	extraction.importNotes = async () => { calls++; return { nodes: 0, chains: 0 }; };

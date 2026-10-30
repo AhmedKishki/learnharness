@@ -3,6 +3,7 @@
  * test spells out (tests/helpers/tiny-pdf.ts) plus the committed 3-page fixture.
  */
 import assert from "node:assert/strict";
+import type { PDFDocumentProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, it } from "node:test";
@@ -252,6 +253,38 @@ describe("pdf-markdown — page kinds", () => {
 		]));
 		assert.deepEqual(out.map((p) => p.kind), ["text", "text", "image-only", "empty"]);
 		assert.equal(markdownOf(out[1]), "Scanned words");
+	});
+
+	it("recognizes all pdfjs raster-image operation families, but not vector paths, on textless pages", async () => {
+		const { OPS } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+		const names = ["paintImageXObject", "paintImageXObjectRepeat", "paintInlineImageXObject", "paintInlineImageXObjectGroup",
+			"paintImageMaskXObject", "paintImageMaskXObjectGroup", "paintImageMaskXObjectRepeat", "paintSolidColorImageMask", "constructPath"] as const;
+		for (const name of names) {
+			const doc = { numPages: 1, getPage: async () => ({ pageNumber: 1,
+				getTextContent: async () => ({ items: [] }), getOperatorList: async () => ({ fnArray: [OPS[name]] }),
+			}) } as unknown as PDFDocumentProxy;
+			const out = await documentToMarkdown(doc);
+			assert.equal(out[0]?.kind, name === "constructPath" ? "empty" : "image-only", name);
+		}
+	});
+
+	it("recognizes stencil-mask and inline-image pages as image-only", async () => {
+		const out = await convert(tinyPdf([{ image: "mask" }, { image: "inline" }]));
+		assert.deepEqual(out.map((p) => p.kind), ["image-only", "image-only"]);
+	});
+
+	it("uses the same text, headings and title order for a selected page as for the full document", async () => {
+		const pdf = tinyPdf([
+			{ runs: stack(Array.from({ length: 6 }, (_, i) => `Body line ${i}: ordinary prose dominates this document's font statistics.`), { y: 700 }) },
+			{ runs: [
+				{ text: "Baseline", x: 72, y: 600, size: 24 },
+				{ text: "Caveat", x: 72, y: 560, size: 24 },
+				{ text: "Experimental conditions", x: 72, y: 720, size: 44 },
+			] },
+		]);
+		const full = await convert(pdf.slice());
+		const selected = await convert(pdf.slice(), [2]);
+		assert.equal(markdownOf(selected[0]), markdownOf(full[1]));
 	});
 
 	it("joinPages marks only pages with text, numbered as in the file", async () => {
