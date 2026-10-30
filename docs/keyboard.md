@@ -30,6 +30,20 @@ localStorage (`lh:keymap`), not in the learning-data settings file. Contextual
 question keys are shown as **Fixed — part of this screen**, not rebindable.
 Tab and Esc also have dedicated handling outside ordinary registry dispatch.
 
+## Keyboard layouts
+
+Shortcut matching and Settings rebinding use the same normalization. With
+**Ctrl, ⌘, or Alt/Option** held, a single non-ASCII character falls back to its
+physical **A–Z or comma** key position when the event supplies that code. For
+example, Russian Ctrl+`л` at `KeyK` matches **Mod+K**, and ⌘+`б` at `Comma`
+matches **Mod+,**. This also covers non-ASCII characters produced by Alt/Option,
+such as Option+K reporting `˚` at `KeyK` and normalizing to `alt+k`.
+
+ASCII characters still follow the reported character, not the physical position:
+an AZERTY event reporting `q` at `KeyA` stays `mod+q`. Bare typing is unchanged.
+Other physical codes and named keys (including dead keys) keep their existing
+handling; this is not a guarantee for every OS/IME or layout-specific key.
+
 ## Focus and Esc
 
 - **Tab** does not use the browser's normal focus traversal. On composer-bearing
