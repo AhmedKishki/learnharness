@@ -20,6 +20,7 @@ import {
 	type ToolResultMessage,
 	type TranscriptContext,
 } from "@earendil-works/pi-ai";
+import { getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
 import type { AnthropicEffort } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { parseStreamingJson, parseToolCallArguments } from "@earendil-works/pi-ai/utils/json-parse";
 
@@ -146,12 +147,15 @@ class ClaudeTurn {
 	private readonly partialJson = new Map<number, string>();
 	private readonly toolBlocks = new Map<number, ToolCall>();
 	private readonly intents: ToolCall[] = [];
+	/** The current message called a harness tool by its bare name; the CLI rejects that call itself. */
+	skippedBareCall = false;
 	started = false;
 	finished = false;
 
 	constructor(
 		private readonly stream: AssistantMessageEventStream,
 		model: Model<Api>,
+		private readonly harnessToolNames: ReadonlySet<string>,
 	) {
 		this.output = createOutput(model);
 	}
@@ -161,6 +165,7 @@ class ClaudeTurn {
 
 		switch (event.type) {
 			case "messageStart":
+				this.skippedBareCall = false;
 				this.updateUsage(event.usage);
 				this.start();
 				return;
@@ -287,6 +292,12 @@ class ClaudeTurn {
 
 			case "toolUse":
 				if (!block.name.startsWith(`mcp__${BRIDGE_SERVER_NAME}__`)) {
+					// Models sometimes call a harness tool by its bare name. With --tools "" the CLI has no such
+					// tool, answers it with an error result and the model retries under the MCP name.
+					if (this.harnessToolNames.has(block.name)) {
+						this.skippedBareCall = true;
+						return;
+					}
 					this.fail("claude CLI emitted an unsupported native tool call", "error");
 					return;
 				}
@@ -568,6 +579,8 @@ class ClaudeProcess implements LiveProcess {
 		if (this.turn.finished) { this.kill(); return; }
 		if (event.type === "messageStop" && this.turn.waitingForAdmission) {
 			const intents = this.turn.getIntents();
+			// Only rejected bare calls: keep the turn open for the model's retry in its next message.
+			if (intents.length === 0 && this.turn.skippedBareCall) return;
 			if (intents.length === 0 || new Set(intents.map((call) => call.id)).size !== intents.length) {
 				this.fail("claude CLI emitted an invalid tool batch");
 				return;
@@ -678,7 +691,7 @@ export function createClaudeCodeStreamFunction(runClaude: RunClaude): StreamFunc
 	const owner = Symbol("claude-code stream owner");
 	return (model, context, options) => {
 		const stream = createAssistantMessageEventStream();
-		const turn = new ClaudeTurn(stream, model);
+		const turn = new ClaudeTurn(stream, model, new Set(getCurrentTools(context.messages).map((tool) => tool.name)));
 
 		const env = toClaudeEnv();
 		// An existing child must not retain stale authentication/routing after env changes.

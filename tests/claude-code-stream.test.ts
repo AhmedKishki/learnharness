@@ -416,6 +416,62 @@ test("unsupported native tool intent fails without exposing executable calls", a
 	assert.match(getErrorMessage(events) ?? "", /unsupported native tool/);
 });
 
+function bareToolUse(index: number, toolUse: ToolUse): string[] {
+	return [
+		streamEvent({ type: "content_block_start", index, content_block: { type: "tool_use", id: toolUse.id, name: toolUse.name, input: {} } }),
+		streamEvent({ type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: JSON.stringify(toolUse.arguments) } }),
+		streamEvent({ type: "content_block_stop", index }),
+	];
+}
+
+function rejectBareCall(toolUse: ToolUse): string {
+	const content = `<tool_use_error>Error: No such tool available: ${toolUse.name}</tool_use_error>`;
+	return JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: toolUse.id, is_error: true, content }] } });
+}
+
+test("a harness tool called by its bare name is left to the CLI, and the prefixed retry is admitted", async (t) => {
+	const bare: ToolUse = { id: "toolu_bare_only", name: "read", arguments: { path: "a" } };
+	const retry: ToolUse = { id: "toolu_bare_retry", name: "read", arguments: { path: "a" } };
+	const { runClaude, calls } = createFakeRun(t, [
+		streamEvent({ type: "message_start", message: { usage: {} } }),
+		...bareToolUse(0, bare),
+		streamEvent({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: {} }),
+		streamEvent({ type: "message_stop" }),
+		rejectBareCall(bare),
+		...toToolUseMessage([retry]),
+		callTool(retry),
+		REPLY,
+	]);
+	const streamFunction = createClaudeCodeStreamFunction(runClaude);
+	const toolMessage = await runTurn(streamFunction, [HI]);
+
+	assert.deepEqual(toolMessage.content, [{ type: "toolCall", id: retry.id, name: "read", arguments: { path: "a" } }]);
+	const reply = await runTurn(streamFunction, [HI, toolMessage, toToolResult(retry, "contents of a")]);
+	assert.equal(getText(reply), "contents of a");
+	await assertCleanedUp(getOnlyCall(calls));
+});
+
+test("a bare harness call beside a prefixed one admits only the prefixed call", async (t) => {
+	const bare: ToolUse = { id: "toolu_bare_mixed", name: "read", arguments: { path: "b" } };
+	const prefixed: ToolUse = { id: "toolu_prefixed_mixed", name: "read", arguments: { path: "a" } };
+	const prefixedMessage = toToolUseMessage([prefixed]);
+	const { runClaude, calls } = createFakeRun(t, [
+		...prefixedMessage.slice(0, -2),
+		...bareToolUse(1, bare),
+		...prefixedMessage.slice(-2),
+		rejectBareCall(bare),
+		callTool(prefixed),
+		REPLY,
+	]);
+	const streamFunction = createClaudeCodeStreamFunction(runClaude);
+	const toolMessage = await runTurn(streamFunction, [HI]);
+
+	assert.deepEqual(toolMessage.content, [{ type: "toolCall", id: prefixed.id, name: "read", arguments: { path: "a" } }]);
+	const reply = await runTurn(streamFunction, [HI, toolMessage, toToolResult(prefixed, "contents of a")]);
+	assert.equal(getText(reply), "contents of a");
+	await assertCleanedUp(getOnlyCall(calls));
+});
+
 test("usage maps input/output/cacheRead/cacheWrite with zero cost, message_delta overriding message_start", async (t) => {
 	const { events } = await runScenario(t, getToolScenario());
 	const done = getLastEvent(events);
