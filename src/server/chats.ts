@@ -133,6 +133,9 @@ export function deleteIdleChatRecord(chatId: string): Extract<ChatDeleteOutcome,
 	if (blocker) return blocker;
 	if (extractionStatuses().some((run) => run.chatId === chatId)) return { ok: false, status: 503, code: "extraction_winding_down", error: "The session's extraction is still winding down — try again in a moment" };
 	finishChatRecordDeletion(chatId);
+	// ChatStore can swallow unlink failures. Do not tell source deletion to
+	// discard placement/folders while the conversation still exists.
+	if (stores.chatStore.getChat(chatId)) throw new Error("Could not remove the selected session record.");
 	return { ok: true };
 }
 

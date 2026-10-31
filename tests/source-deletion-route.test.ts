@@ -87,6 +87,28 @@ it("explicit session deletion uses existing cleanup, including jobs, while other
 	assert.deepEqual(stores.graphStore.readNodes()[0]?.provenance.map((p) => p.chatId), ["b"]);
 	assert.deepEqual(sourceDirectory.read().organization.folders, []);
 });
+it("a swallowed session-unlink failure retains placement and folders, reports partial failure, and permits explicit retry", async () => {
+	const chat = stores.chatStore.createChat("Cannot unlink yet");
+	stores.chatStore.saveMessages(chat.id, [{ id: "m", role: "user", content: "Keep these messages on failure.", timestamp: 1 }]);
+	const before = stores.chatStore.getChat(chat.id);
+	stores.graphStore.appendNode(node("chat_unique", [chat.id])); book("zero");
+	folders({ [chat.id]: { folderId: "inner" }, zero: { folderId: "inner" } });
+	const organization = fs.readFileSync(SOURCE_ORGANIZATION_FILE, "utf8");
+	const deleteChat = stores.chatStore.deleteChat;
+	try {
+		stores.chatStore.deleteChat = () => false; // the store swallows unlink/I/O errors
+		const response = await remove([chat.id, "zero"], ["outer", "inner", "empty"], true);
+		assert.equal(response.status, 500);
+		assert.match((await response.json()).error, /Some entries may already have been removed/);
+		assert.deepEqual(stores.chatStore.getChat(chat.id), before);
+		assert.equal(fs.readFileSync(SOURCE_ORGANIZATION_FILE, "utf8"), organization, "no placement or selected folder is discarded on failed record removal");
+		assert.deepEqual(stores.graphStore.readNodes(), [], "earlier graph writes are honest partial progress");
+		assert.deepEqual(stores.graphStore.readSources(), [], "earlier imported-record removal is also partial progress");
+	} finally { stores.chatStore.deleteChat = deleteChat; }
+	assert.equal((await remove([chat.id, "zero"], ["outer", "inner", "empty"], true)).status, 200);
+	assert.equal(stores.chatStore.getChat(chat.id), null);
+	assert.deepEqual(sourceDirectory.read().organization, { version: 1, folders: [], placements: {} });
+});
 it("preflights every selected session's running turn/jobs before deleting any selected imports", async () => {
 	const chat = stores.chatStore.createChat("Busy"); book("a");
 	beginTurn(chat.id);
