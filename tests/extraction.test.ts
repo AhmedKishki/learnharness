@@ -1441,26 +1441,28 @@ describe("the extractor redesign (owner, 2026-09-30): chains are the deliverable
 		assert.deepEqual(await pipeline.runExtraction(chatId), { nodes: 2, chains: 1 });
 	});
 
-	it("the system prompt is goal-first: ONE shared core, both preambles assembled onto it", () => {
-		// The core carries the goal + submission mechanics.
-		assert.match(EXTRACTION_CORE, /JOINTLY entail a conclusion/);
-		assert.match(EXTRACTION_CORE, /for the same conclusion are separate chains/);
-		assert.match(EXTRACTION_CORE, /Entailment is the only link that earns a\s+chain/);
-		assert.match(EXTRACTION_CORE, /what a reference on it would teach/);
-		assert.match(EXTRACTION_CORE, /stand\s+alone for a reader who never saw this source/);
-		assert.match(EXTRACTION_CORE, /may not lean on the source's own\s+scaffolding/);
-		assert.match(EXTRACTION_CORE, /SUBMIT with one submit_findings call/);
-		assert.match(EXTRACTION_CORE, /"chains": \[\] when the source makes no\s+arguments/);
-		// The digest doctrine (2026-09-30 evening) + the core-ideas language.
-		assert.match(EXTRACTION_CORE, /THE GOAL: uncover the source's CORE IDEAS/);
-		assert.match(EXTRACTION_CORE, /everything derives from the foundations/);
-		assert.match(EXTRACTION_CORE, /build\s+on it\./);
+	it("separate source framing is assembled around shared graph and output contracts", () => {
+		const sharedRules = Object.values(EXTRACTION_CORE).join("\n\n");
+		assert.match(sharedRules, /JOINTLY entail a conclusion/);
+		assert.match(sharedRules, /for the same conclusion are separate chains/);
+		assert.match(sharedRules, /Entailment is the only link that earns a\s+chain/);
+		assert.match(sharedRules, /stand\s+alone for a reader who never saw this source/);
+		assert.match(sharedRules, /may not lean on the source's own\s+scaffolding/);
+		assert.match(sharedRules, /SUBMIT with one submit_findings call/);
+		assert.match(sharedRules, /"chains": \[\] when the source makes no\s+arguments/);
+		assert.match(sharedRules, /build\s+on it\./);
+		assert.doesNotMatch(sharedRules, /THE GOAL:|source teaches by arguing|Extract the load-bearing ideas/);
 
-		// Assembly: each front door = its preamble + the shared core.
+		// Both front doors still receive every shared contract, but own their
+		// goal/selection wording independently of those contracts.
 		assert.ok(EXTRACTOR_INSTRUCTIONS.startsWith(SESSION_PREAMBLE));
-		assert.ok(EXTRACTOR_INSTRUCTIONS.includes(EXTRACTION_CORE));
 		assert.ok(NOTES_EXTRACTOR_INSTRUCTIONS.startsWith(NOTES_PREAMBLE));
-		assert.ok(NOTES_EXTRACTOR_INSTRUCTIONS.includes(EXTRACTION_CORE), "the notes extractor shares the core by construction");
+		for (const prompt of [EXTRACTOR_INSTRUCTIONS, NOTES_EXTRACTOR_INSTRUCTIONS]) {
+			for (const section of Object.values(EXTRACTION_CORE)) assert.ok(prompt.includes(section));
+			assert.match(prompt, /THE GOAL: uncover the source's CORE IDEAS/);
+			assert.match(prompt, /everything derives from the foundations/);
+			assert.match(prompt, /what a reference on it would teach/);
+		}
 
 		// THE ANCHOR RULE (owner, 2026-10-13) is SESSION-ONLY: the exact
 		// sentence rides the session instructions; the notes
@@ -1486,6 +1488,19 @@ describe("the extractor redesign (owner, 2026-09-30): chains are the deliverable
 			assert.doesNotMatch(prompt, /Faithfulness:/);
 			assert.doesNotMatch(prompt, /follows\/supports/);
 		}
+	});
+
+	it("preserves both complete system prompts byte-for-byte across the structural split", () => {
+		// SHA-256 snapshots of the complete UTF-8 prompts before this refactor,
+		// including every newline, preamble and the session-only anchor rule.
+		assert.equal(
+			createHash("sha256").update(EXTRACTOR_INSTRUCTIONS, "utf8").digest("hex"),
+			"a8bddd7d47130ed5e39ffe7d8d0ed6efdd6b30407d52cd9838e7be2e465089a6",
+		);
+		assert.equal(
+			createHash("sha256").update(NOTES_EXTRACTOR_INSTRUCTIONS, "utf8").digest("hex"),
+			"790b16339ea386c28f7f06d9fdea6c4dbba4399c7154b17251855405e85f2fe1",
+		);
 	});
 });
 
@@ -2053,17 +2068,16 @@ describe("the session-deletion guard (chat deleted mid-run)", () => {
 // ─── digest-aware serialized extraction + chain simplification (owner, 2026-09-30 evening) ────
 
 describe("digest-aware serialized extraction (the extractor is the assembler)", () => {
-	it("the system prompt is goal-first: core ideas, foundations direction, build-on-the-digest doctrine", () => {
-		assert.match(EXTRACTION_CORE, /THE GOAL: uncover the source's CORE IDEAS and show how everything derives from the foundations/);
-		assert.match(EXTRACTION_CORE, /JOINTLY entail a conclusion/);
-		assert.match(EXTRACTION_CORE, /[Ee]ntailment is the\s+only link that earns a\s+chain/);
-		assert.match(EXTRACTION_CORE, /examples,\s+notation glosses, and restatements that no argument needs are not core ideas/);
-		assert.match(EXTRACTION_CORE, /build\s+on it\. Reference an existing idea by its id/);
-		assert.match(EXTRACTION_CORE, /OR existing ids from THE GRAPH SO FAR, verbatim/);
-		// Each front door = its preamble + the shared core; the preambles
-		// name the continuing-source posture.
-		assert.ok(EXTRACTOR_INSTRUCTIONS.includes(EXTRACTION_CORE));
-		assert.ok(NOTES_EXTRACTOR_INSTRUCTIONS.includes(EXTRACTION_CORE));
+	it("both source prompts retain their goal and the shared build-on-the-digest doctrine", () => {
+		assert.match(EXTRACTION_CORE.entailment, /JOINTLY entail a conclusion/);
+		assert.match(EXTRACTION_CORE.entailment, /[Ee]ntailment is the\s+only link that earns a\s+chain/);
+		assert.match(EXTRACTION_CORE.continuation, /build\s+on it\. Reference an existing idea by its id/);
+		assert.match(EXTRACTION_CORE.submission, /OR existing ids from THE GRAPH SO FAR, verbatim/);
+		for (const prompt of [EXTRACTOR_INSTRUCTIONS, NOTES_EXTRACTOR_INSTRUCTIONS]) {
+			assert.match(prompt, /THE GOAL: uncover the source's CORE IDEAS and show how everything derives from the foundations/);
+			assert.match(prompt, /examples,\s+notation glosses, and restatements that no argument needs are not core ideas/);
+			for (const section of Object.values(EXTRACTION_CORE)) assert.ok(prompt.includes(section));
+		}
 		assert.match(SESSION_PREAMBLE, /building on everything already extracted from this source/);
 		assert.match(NOTES_PREAMBLE, /building on everything already extracted from this source/);
 	});
