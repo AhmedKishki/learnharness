@@ -288,6 +288,17 @@ describe("ChainTableBody — the floating selection bar (never shifts layout)", 
 		assert.ok(html.indexOf('chain-danger-divider"') < html.indexOf('chain-delete"'));
 	});
 
+	it("Delete and practice Done have matching top/bottom/right pill insets and fully rounded contours", () => {
+		for (const [selectMode, action] of [[false, "chain-delete"], [true, "chain-practice-done"]] as const) {
+			const html = render({ selectMode, selectedSources: new Set(["chat1"]), selection: new Set(["a"]) });
+			const bar = html.match(/<div[^>]*data-testid="chain-selection-bar"[^>]*>/)?.[0] ?? "";
+			const button = html.match(new RegExp(`<button[^>]*data-testid="${action}"[^>]*>`))?.[0] ?? "";
+			assert.match(bar, /rounded-full/); assert.match(button, /rounded-full/);
+			assert.match(bar, /py-2 pl-4 pr-2/, "keep text inset, match right inset to the vertical inset");
+			assert.equal(bar.includes(" px-4 "), false);
+		}
+	});
+
 	it("the Delete rides ONLY with a selection — no bar, no kill switch", () => {
 		const html = render({ expandedClusters: new Set(["chat1"]) });
 		assert.ok(!html.includes('data-testid="chain-delete"'));
