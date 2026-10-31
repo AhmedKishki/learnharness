@@ -2,11 +2,11 @@
 
 import { createContext, useContext, useLayoutEffect, useRef, useState, type DragEvent, type HTMLAttributes, type ReactNode } from "react";
 import { ChevronRightIcon, FolderIcon, FolderOpenIcon } from "lucide-react";
-import { canMoveFolder, folderIsEmpty, fuzzyScore, placementOf, type OrganizationAction, type SourceDirectory } from "@/src/core";
+import { canMoveFolder, folderIsEmpty, fuzzyScore, placementOf, folderEntryCheck, type SourceEntrySelection, type OrganizationAction, type SourceDirectory } from "@/src/core";
 import type { ChainSort } from "./chain-table";
 import { chainRow } from "./chain-navigation";
 
-export type OrganizationChange = (action: OrganizationAction) => Promise<void>;
+export type OrganizationChange = (action: OrganizationAction) => Promise<string | void>;
 const DRAG_TYPE = "application/x-learnharness-source";
 const RowEditing = createContext<((editing: boolean) => void) | null>(null);
 
@@ -59,7 +59,7 @@ export function sourceNameMatches(directory: SourceDirectory | undefined, id: st
 /** Same Enter/blur commit and Escape cancel interaction as session titles.
  * The in-flight guard prevents Enter followed by blur from double-writing. */
 export function EditableSourceName({ name, onSave, onCancel, initiallyEditing = false }: {
-	name: string; onSave: (name: string) => Promise<void>; onCancel?: () => void; initiallyEditing?: boolean;
+	name: string; onSave: (name: string) => Promise<unknown>; onCancel?: () => void; initiallyEditing?: boolean;
 }) {
 	const [editing, setEditing] = useState(initiallyEditing);
 	const [draft, setDraft] = useState(name);
@@ -98,12 +98,13 @@ interface TreeSource {
 	key: string; birth: string | null; label: string | null; nodeIds: string[]; newestCreatedAt: string;
 }
 export function SourceFolderTree<T extends TreeSource>({ groups, directory, query, sort, renderSource, onAction, expanded,
-	onToggleExpanded, selection, selectedFolders, onToggleNodes, onToggleFolder, allSourceNodes, allowEmptySelection = true, collapsedForSearch }: {
+	onToggleExpanded, selection, selectedFolders, onToggleNodes, onToggleFolder, allSourceNodes, allowEmptySelection = true, collapsedForSearch, sourceSelection }: {
 	groups: T[]; directory?: SourceDirectory; query: string; sort: ChainSort;
 	renderSource: (source: T, depth: number) => ReactNode;
 	allSourceNodes?: ReadonlyMap<string, ReadonlySet<string>>;
 	allowEmptySelection?: boolean;
 	collapsedForSearch?: ReadonlySet<string>;
+	sourceSelection?: SourceEntrySelection;
 	onAction?: OrganizationChange; expanded: ReadonlySet<string>; onToggleExpanded: (id: string) => void;
 	selection: ReadonlySet<string>; selectedFolders: ReadonlySet<string>;
 	onToggleNodes: (ids: string[], next: boolean) => void; onToggleFolder: (id: string, next: boolean) => void;
@@ -172,17 +173,18 @@ export function SourceFolderTree<T extends TreeSource>({ groups, directory, quer
 			const members = nodeIds(folder.id);
 			const empty = folderIsEmpty(state, folder.id, ids);
 			const selectedCount = members.filter((id) => selection.has(id)).length;
+			const entryCheck = sourceSelection ? folderEntryCheck(directory, folder.id, sourceSelection) : undefined;
 			const hasChildren = state.folders.some((f) => f.parentId === folder.id && visibleFolder(f.id)) || groups.some((g) => parentOf(g) === folder.id);
 			return <div key={folder.id} data-testid={`source-folder-${folder.id}`} className="relative" {...dropProps(folder.id)}>
 				<SourceDragRow {...chainRow(["folder", folder.id], depth, open)} kind="folder" id={folder.id} name={folder.name} enabled={Boolean(onAction)} data-testid={`folder-row-${folder.id}`}
 					data-drop-active={dropTarget === folder.id}
 					className={`flex items-center gap-1 py-1.5 pr-3 transition-colors ${!open || !hasChildren ? "border-b border-transparent" : ""} ${dropTarget === folder.id ? "bg-accent/50" : ""}`}
 					style={{ paddingLeft: 12 + depth * 36 }}>
-					<input type="checkbox" aria-label={`Select contents of ${folder.name}`} data-testid={`folder-checkbox-${folder.id}`}
-						className="size-3.5 shrink-0 accent-primary" disabled={empty ? !allowEmptySelection : members.length === 0}
-						checked={empty ? selectedFolders.has(folder.id) : members.length > 0 && selectedCount === members.length}
-						ref={(el) => { if (el) el.indeterminate = !empty && selectedCount > 0 && selectedCount < members.length; }}
-						onChange={(e) => { if (empty) onToggleFolder(folder.id, e.target.checked); else onToggleNodes(members, e.target.checked); }} />
+					<input type="checkbox" aria-label={`Select ${sourceSelection ? "folder" : "contents of"} ${folder.name}`} data-testid={`folder-checkbox-${folder.id}`}
+						className="size-3.5 shrink-0 accent-primary" disabled={entryCheck ? false : empty ? !allowEmptySelection : members.length === 0}
+						checked={entryCheck?.checked ?? (empty ? selectedFolders.has(folder.id) : members.length > 0 && selectedCount === members.length)}
+						ref={(el) => { if (el) el.indeterminate = entryCheck?.indeterminate ?? (!empty && selectedCount > 0 && selectedCount < members.length); }}
+						onChange={(e) => { if (entryCheck || empty) onToggleFolder(folder.id, e.target.checked); else onToggleNodes(members, e.target.checked); }} />
 					<button type="button" aria-expanded={open} aria-label={`Expand folder ${folder.name}`} data-testid={`folder-toggle-${folder.id}`}
 						onClick={() => onToggleExpanded(folder.id)} className="flex h-5 w-3.5 shrink-0 items-center justify-center text-muted-foreground/70">
 						<ChevronRightIcon className={`size-3.5 ${open ? "rotate-90" : ""}`} />

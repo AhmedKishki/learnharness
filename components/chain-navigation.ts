@@ -47,6 +47,7 @@ export function navigateChainRows(rows: ChainNavigationRow[], active: string | n
 export function useChainNavigation(rootRef: RefObject<HTMLDivElement | null>, searchRef: RefObject<HTMLInputElement | null>, enabled: boolean) {
 	const active = useRef<string | null>(null);
 	const pendingEnter = useRef<string | null>(null);
+	const pendingFocus = useRef<string | null>(null);
 	const readRows = () => [...(rootRef.current?.querySelectorAll<HTMLElement>("[data-chain-nav-row]") ?? [])].map((element) => ({
 		element, key: element.dataset.chainNavRow!, depth: Number(element.dataset.chainNavDepth),
 		expanded: element.dataset.chainNavExpanded === undefined ? undefined : element.dataset.chainNavExpanded === "true",
@@ -62,7 +63,9 @@ export function useChainNavigation(rootRef: RefObject<HTMLDivElement | null>, se
 		}
 	};
 	useLayoutEffect(() => {
-		if (pendingEnter.current !== null) {
+		if (pendingFocus.current !== null && readRows().some((row) => row.key === pendingFocus.current)) {
+			const key = pendingFocus.current; pendingFocus.current = null; highlight(key, true);
+		} else if (pendingEnter.current !== null) {
 			const rows = readRows(), index = rows.findIndex((row) => row.key === pendingEnter.current);
 			const parent = rows[index], candidate = index >= 0 ? rows[index + 1] : undefined;
 			const child = parent && candidate && candidate.depth > parent.depth ? candidate : undefined;
@@ -82,14 +85,28 @@ export function useChainNavigation(rootRef: RefObject<HTMLDivElement | null>, se
 		const onPointerDown = (event: PointerEvent) => {
 			const row = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-chain-nav-row]") : null;
 			if (row) highlight(row.dataset.chainNavRow!);
+			else if (event.target instanceof Element && event.target.closest('[data-testid="source-root-drop"]')) {
+				event.preventDefault(); // do not refocus the tabindex=-1 table after blur
+				pendingEnter.current = null; pendingFocus.current = null; highlight(null);
+				const focused = document.activeElement;
+				if (focused && root?.contains(focused) && "blur" in focused) (focused as HTMLElement).blur();
+			}
 		};
 		const onKeyDown = (event: KeyboardEvent) => {
-			if (event.defaultPrevented || event.isComposing || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+			if (event.defaultPrevented || event.isComposing || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "].includes(event.key)) return;
 			if (sessionFindHasForegroundLayer(document)) return;
 			const target = event.target instanceof Element ? event.target : null;
 			if (target && !root?.contains(target) && target !== document.body && target !== document.documentElement) return;
 			const fromSearch = target === searchRef.current;
 			if (fromSearch ? event.key !== "ArrowDown" : target?.closest('input:not([type="checkbox"]),textarea,[contenteditable="true"]')) return;
+			if (event.key === " ") {
+				if (target?.closest('button,a[href],[role="button"]') && !target.closest("[data-chain-nav-row]")) return;
+				const row = readRows().find((row) => row.key === active.current);
+				const checkbox = row?.element.querySelector<HTMLInputElement>('input[type="checkbox"]');
+				if (!row || !checkbox || checkbox.disabled) return;
+				event.preventDefault(); event.stopPropagation(); checkbox.click(); highlight(row.key, true);
+				return;
+			}
 			const result = navigateChainRows(readRows(), fromSearch ? null : active.current, event.key);
 			if (!result.key) return;
 			event.preventDefault(); event.stopPropagation();
@@ -105,4 +122,9 @@ export function useChainNavigation(rootRef: RefObject<HTMLDivElement | null>, se
 		return () => { window.removeEventListener("lh:kbd-find", onFind); document.removeEventListener("keydown", onKeyDown); root?.removeEventListener("pointerdown", onPointerDown); };
 	});
 	useEffect(() => { if (enabled && !sessionFindHasForegroundLayer(document)) rootRef.current?.focus({ preventScroll: true }); }, [enabled, rootRef]);
+	return { focusRow(parts: string[]) {
+		const key = JSON.stringify(parts);
+		if (readRows().some((row) => row.key === key)) highlight(key, true);
+		else pendingFocus.current = key;
+	} };
 }

@@ -63,6 +63,7 @@ it("session rename uses its existing title without activity churn; existing root
 it("server validates cycles, stale sources/parents and nonempty folders, including zero-node files", async () => {
 	const created = await (await change({ action: "create-folder", name: "Empty", parentId: null })).json();
 	const folder = created.organization.folders.find((f: { name: string }) => f.name === "Empty");
+	assert.equal(created.createdFolderId, folder.id, "creation identifies the exact new row, even with duplicate folder names");
 	assert.equal((await change({ action: "move", kind: "folder", id: folder.id, parentId: folder.id })).status, 400);
 	assert.equal((await change({ action: "move", kind: "source", id: "unknown", parentId: folder.id })).status, 400);
 	assert.equal((await change({ action: "move", kind: "source", id: sourceId("Root/empty.md"), parentId: folder.id })).status, 200);

@@ -114,6 +114,8 @@ export function MinimalHome({
 	}, []);
 	useEffect(() => {
 		readState();
+		window.addEventListener("lh:graph-revision", readState);
+		return () => window.removeEventListener("lh:graph-revision", readState);
 	}, [readState]);
 
 	// The practice chip opens the table in select mode (GraphView's law):

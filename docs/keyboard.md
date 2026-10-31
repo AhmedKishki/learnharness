@@ -100,6 +100,11 @@ submission conventions above.
   sources → chains → propositions. A leaf stays where it is.
 - **←** returns to the parent and collapses that parent's contents. At the top
   level, it collapses the highlighted row if open.
+- **Space** toggles the highlighted row's checkbox, where available. Ordinary
+  browsing selects whole sources/folders; practice's Pick nodes also offers
+  chain/proposition checkboxes. Text inputs retain normal Space behavior.
+- Clicking blank space below the tree clears row focus/highlighting, not checked
+  items. Creating a folder clears any search and focuses the new folder.
 - The whole active row is highlighted and scrolled into view. This focus is
   separate from checkbox selection; navigation does not select graph nodes.
   Clicking a row establishes the navigation position. Rename inputs keep their

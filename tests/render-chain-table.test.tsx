@@ -74,6 +74,8 @@ const BASE = {
 	sort: { col: "name", dir: 1 } as ChainSort,
 	onSort: () => {},
 	selection: new Set<string>(),
+	selectedSources: new Set<string>(),
+	selectMode: false,
 	expandedClusters: new Set<string>(),
 	expandedChains: new Set<string>(),
 	onToggleCluster: () => {},
@@ -268,19 +270,19 @@ describe("ChainTableBody — the floating selection bar (never shifts layout)", 
 		assert.ok(!html.includes('data-testid="chain-selection-bar"'));
 	});
 
-	it("appears with the derived N nodes → M chains + Clear + the FENCED Delete", () => {
-		const html = render({ selection: new Set(["a", "b", "c1"]) });
+	it("counts selected sources with Clear and a fenced source-only Delete", () => {
+		const html = render({ selectedSources: new Set(["chat1", "notes1"]) });
 		assert.ok(html.includes('data-testid="chain-selection-bar"'));
 		assert.ok(html.includes('data-testid="chain-selected-summary"'));
-		assert.ok(html.includes("3 nodes → 1 chain"));
+		assert.ok(html.includes("2 sources"));
 		assert.ok(html.includes('data-testid="chain-clear"'));
 		// The danger fence (owner, 2026-09-29 night): a divider quarantines
 		// the destructive action at the bar's right end, red + trash icon,
-		// riding the same confirm dialog as the canvas delete.
+		// opening a source-contribution confirmation, not global node deletion.
 		assert.ok(html.includes('data-testid="chain-danger-divider"'));
 		const del = html.match(/<button[^>]*data-testid="chain-delete"[^>]*>/)?.[0] ?? "";
 		assert.match(del, /border-destructive\/50/); // the destructive pair
-		assert.match(del, /aria-label="Delete 3 selected nodes"/);
+		assert.match(del, /aria-label="Delete selected sources and folders"/);
 		assert.ok(html.includes("lucide-trash-2"), "the trash icon");
 		// the fence is before Delete in the DOM (right end of the bar)
 		assert.ok(html.indexOf('chain-danger-divider"') < html.indexOf('chain-delete"'));
@@ -293,7 +295,7 @@ describe("ChainTableBody — the floating selection bar (never shifts layout)", 
 	});
 
 	it("a premise WITHOUT its conclusion derives as the singleton it becomes", () => {
-		const html = render({ selection: new Set(["a", "d"]) });
+		const html = render({ selectMode: true, selection: new Set(["a", "d"]) });
 		assert.ok(html.includes("2 nodes → 2 chains"), "no follows-edge survives inside the selection");
 	});
 });
@@ -303,6 +305,7 @@ describe("ChainTableBody — the fuzzy search (grouped + auto-expand)", () => {
 		const aliased = NODES.map((n) => (n.id === "b" ? { ...n, aliases: ["zebra alias"] } : n));
 		const html = render({
 			nodes: aliased,
+			selectMode: true,
 			query: "zebra",
 			selection: new Set(["a", "b", "c1"]), // selection spans BOTH chains
 		});
@@ -339,7 +342,7 @@ describe("ChainTableOverlay — the lifted practice pick (owner vision, 2026-10-
 	}
 
 	it("CONTROLLED selection renders the caller's set — the bar counts it live", () => {
-		const html = overlay({ controlledSelection: new Set(["a", "b", "c1"]) });
+		const html = overlay({ selectMode: true, controlledSelection: new Set(["a", "b", "c1"]) });
 		assert.ok(html.includes("3 nodes → 1 chain"), "the bar reflects the lifted set, not internal state");
 	});
 
@@ -354,9 +357,9 @@ describe("ChainTableOverlay — the lifted practice pick (owner vision, 2026-10-
 		assert.ok(!html.includes('data-testid="chain-danger-divider"'));
 	});
 
-	it("browse mode unchanged: the fenced Delete remains", () => {
+	it("browse mode cannot accidentally delete a lifted graph-node selection", () => {
 		const html = overlay({ controlledSelection: new Set(["a"]) });
-		assert.ok(html.includes('data-testid="chain-delete"'));
+		assert.ok(!html.includes('data-testid="chain-delete"'));
 		assert.ok(!html.includes('data-testid="chain-practice-done"'));
 	});
 });

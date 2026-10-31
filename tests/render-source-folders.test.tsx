@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ChainTableBody } from "../components/chain-table.tsx";
-import { DeleteNodeBody } from "../components/delete-node-dialog.tsx";
+import { DeleteSourceBody } from "../components/delete-source-dialog.tsx";
 import { sourceNameMatches } from "../components/source-folder-tree.tsx";
 import type { GraphNode, SourceDirectory } from "../src/core/index.ts";
 const directory: SourceDirectory = {
@@ -42,7 +42,7 @@ it("source inventory includes unextracted chats and zero-graph imported books; o
 	assert.doesNotMatch(html, /No matching chains/);
 });
 it("nested folders aggregate unique graph member counts, keep three-column sorting and expose root placement", () => {
-	const html = render({ nodes, expandedClusters: new Set(["f1", "f2", "notes"]), selection: new Set(["a", "b"]) });
+	const html = render({ nodes, expandedClusters: new Set(["f1", "f2", "notes"]), selectedSources: new Set(["notes"]), selectedFolders: new Set(["f1", "f2"]) });
 	assert.match(html, /data-testid="folder-checkbox-f1"[^>]*checked/); assert.match(html, /data-testid="folder-checkbox-f2"[^>]*checked/);
 	assert.match(html, /data-testid="sort-name"/); assert.match(html, /data-testid="sort-props"/); assert.match(html, /data-testid="sort-created"/);
 	assert.match(html, /lucide-book-open/); assert.match(html, /draggable="true"/);
@@ -60,17 +60,27 @@ it("re-import record dates do not change existing graph groups' Created dates", 
 	assert.match(html, /2026-10-29/);
 });
 it("folder selection means all its graph contents even while a search hides some rows", () => {
-	const html = render({ nodes, query: "a", expandedClusters: new Set(["f1", "f2"]), selection: new Set(["a"]) });
+	const html = render({ selectMode: true, nodes, query: "a", expandedClusters: new Set(["f1", "f2"]), selection: new Set(["a"]) });
 	const checkbox = html.split('data-testid="folder-checkbox-f1"')[0]!.split("<input").at(-1)!;
 	assert.doesNotMatch(checkbox, /checked/);
 	assert.match(html, />2<\/span>/, "full folder count, not only matched node a");
 });
 it("empty folder selection enables Delete outside practice, and practice never selects organizational folders", () => {
 	const html = render({ selectedFolders: new Set(["empty"]) });
-	assert.match(html, /1 empty folder/); assert.match(html, /data-testid="chain-delete"/);
+	assert.match(html, /1 folder/); assert.match(html, /data-testid="chain-delete"/);
 	const practice = render({ selectMode: true });
 	assert.match(practice, /data-testid="folder-checkbox-empty"[^>]*disabled|disabled=""[^>]*data-testid="folder-checkbox-empty"/);
 	assert.doesNotMatch(practice, /data-testid="chain-delete"/);
+});
+it("ordinary browsing offers source/folder checks, including empty ones, but only practice offers fine-grained node checks", () => {
+	const html = render({ nodes, expandedClusters: new Set(["f1", "f2", "notes"]), expandedChains: new Set(["a", "b"]) });
+	assert.doesNotMatch(html, /data-testid="(?:prop|chain)-checkbox-/);
+	for (const id of ["cluster-checkbox-chat", "cluster-checkbox-notes", "folder-checkbox-f1", "folder-checkbox-f2", "folder-checkbox-empty"]) {
+		const tag = html.match(new RegExp(`<input[^>]*data-testid="${id}"[^>]*>`))?.[0];
+		assert.ok(tag, id); assert.doesNotMatch(tag, /disabled/, id);
+	}
+	const practice = render({ selectMode: true, nodes, expandedClusters: new Set(["f1", "f2", "notes"]), expandedChains: new Set(["a", "b"]) });
+	assert.match(practice, /data-testid="chain-checkbox-a"/); assert.match(practice, /data-testid="prop-checkbox-a"/);
 });
 it("source and folder names are searchable without needing any extracted nodes", () => {
 	assert.equal(sourceNameMatches(directory, "notes", "Named book", "Course"), true);
@@ -78,8 +88,9 @@ it("source and folder names are searchable without needing any extracted nodes",
 	assert.equal(sourceNameMatches(directory, "notes", "Named book", "xyzxyz"), false);
 	assert.match(render({ query: "Not yet" }), /Not yet extracted/);
 });
-it("confirmation clearly separates empty-container removal from permanent graph-node deletion", () => {
-	const html = renderToStaticMarkup(<DeleteNodeBody nodes={[]} folders={[{ id: "empty", name: "Empty" }]} busy={false} failure={null} onClose={() => {}} onRun={() => {}} />);
-	assert.match(html, /Remove empty folders\?/); assert.match(html, /Empty folders: Empty/);
-	assert.match(html, /Only the named empty folders are removed/); assert.doesNotMatch(html, /Delete 0 nodes|permanently deletes/);
+it("source confirmation explains shared-node survival and makes conversation deletion an unchecked opt-in", () => {
+	const html = renderToStaticMarkup(<DeleteSourceBody sources={directory.sources} folders={[]} deleteSessions={false} onDeleteSessions={() => {}} busy={false} failure="" onClose={() => {}} onRun={() => {}} />);
+	assert.match(html, /Knowledge supported by other sources survives/); assert.match(html, /can be extracted again/);
+	assert.match(html, /graph contributions and extraction coverage are cleared/); assert.match(html, /Also delete the 1 selected session/);
+	assert.doesNotMatch(html.match(/<input[^>]+>/)?.[0] ?? "", /checked/);
 });

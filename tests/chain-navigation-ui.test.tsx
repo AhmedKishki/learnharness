@@ -1,10 +1,11 @@
-import React, { act, useState } from "react";
+import React, { act, useRef, useState } from "react";
 (globalThis as Record<string, unknown>).React = React;
 import assert from "node:assert/strict";
 import { afterEach, it } from "node:test";
 import { createRoot, type Root } from "react-dom/client";
 import { parseHTML } from "linkedom";
 import { ChainTableBody } from "../components/chain-table.tsx";
+import { chainRow, useChainNavigation } from "../components/chain-navigation.ts";
 import type { SourceDirectory } from "../src/core/index.ts";
 const dom = parseHTML("<html><body></body></html>");
 Object.assign(globalThis, { window: dom.window, document: dom.document, Element: dom.window.Element, IS_REACT_ACT_ENVIRONMENT: true });
@@ -12,6 +13,8 @@ let focused: Element | undefined, scrolled = 0, selectedText = 0;
 dom.window.HTMLElement.prototype.focus = function () { focused = this; };
 dom.window.HTMLElement.prototype.scrollIntoView = function () { scrolled++; };
 dom.window.HTMLInputElement.prototype.select = function () { selectedText++; };
+dom.window.HTMLElement.prototype.blur = function () { if (focused === this) focused = undefined; };
+Object.defineProperty(document, "activeElement", { configurable: true, get: () => focused ?? document.body });
 const directory: SourceDirectory = {
 	organization: { version: 1, folders: [
 		{ id: "outer", name: "Outer", parentId: null, createdAt: "2026-10-30" },
@@ -105,4 +108,36 @@ it("rename arrows stay in the input, and modal-owned keyboard focus disables bot
 	assert.equal(focused, input); await act(async () => { setEnabled(false); });
 	await act(async () => { window.dispatchEvent(new dom.window.CustomEvent("lh:kbd-find")); }); assert.equal(focused, input);
 	assert.equal((await key("ArrowDown", document.querySelector('[data-testid="chain-table"]')!)).defaultPrevented, false);
+});
+it("Space clicks only the focused row's enabled checkbox; text editing and checkbox-free chain rows retain native behavior", async () => {
+	await mount(); await key("ArrowDown");
+	let clicks = 0;
+	const checkbox = active()!.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+	checkbox.click = () => { clicks++; };
+	assert.equal((await key(" ")).defaultPrevented, true); assert.equal(clicks, 1);
+	checkbox.disabled = true; assert.equal((await key(" ")).defaultPrevented, false); assert.equal(clicks, 1);
+	const search = document.querySelector('[data-testid="chain-table-search"]')!;
+	assert.equal((await key(" ", search)).defaultPrevented, false);
+	assert.equal((await key(" ", document.querySelector('[data-testid="sort-name"]')!)).defaultPrevented, false);
+	await key("ArrowDown"); await key("ArrowRight"); await key("ArrowRight"); await key("ArrowRight");
+	assert.equal(activeKey()?.[0], "chain"); assert.equal((await key(" ")).defaultPrevented, false);
+});
+it("blank space below the tree clears row highlighting and focus, without toggling checked entries", async () => {
+	await mount(); await key("ArrowDown"); assert.ok(active()); assert.equal(focused, active());
+	const checkbox = active()!.querySelector<HTMLInputElement>('input[type="checkbox"]')!; checkbox.checked = true;
+	await point('[data-testid="source-root-drop"]'); assert.equal(active(), null); assert.equal(focused, undefined); assert.equal(checkbox.checked, true);
+});
+it("programmatic focus waits for a just-created row to render, then highlights and scrolls it", async () => {
+	let addRow: () => void;
+	function FocusHarness() {
+		const [created, setCreated] = useState(false);
+		const rootRef = useRef<HTMLDivElement>(null), searchRef = useRef<HTMLInputElement>(null);
+		const navigation = useChainNavigation(rootRef, searchRef, true);
+		addRow = () => { navigation.focusRow(["folder", "new"]); setCreated(true); };
+		return <div ref={rootRef} tabIndex={-1}><input ref={searchRef} />{created && <div {...chainRow(["folder", "new"], 0, false)}>New folder</div>}</div>;
+	}
+	host = document.createElement("div"); document.body.appendChild(host); root = createRoot(host); scrolled = 0;
+	await act(async () => { root!.render(<FocusHarness />); });
+	await act(async () => { addRow(); });
+	assert.deepEqual(activeKey(), ["folder", "new"]); assert.equal(focused, active()); assert.ok(scrolled > 0);
 });

@@ -68,13 +68,13 @@ import {
 	SearchIcon,
 	XIcon,
 } from "lucide-react";
-import { chainsForSelection, folderIsEmpty, formatChainLine, fuzzyScore, sourceFileLabel } from "@/src/core";
-import type { GraphChain, GraphNode, SourceDirectory } from "@/src/core";
+import { chainsForSelection, folderEntryCheck, toggleSourceEntries, formatChainLine, fuzzyScore, sourceFileLabel } from "@/src/core";
+import type { GraphChain, GraphNode, SourceDirectory, SourceEntry, SourceFolder, SourceEntrySelection } from "@/src/core";
 import { EditableSourceName, SourceDragRow, sourceNameMatches, SourceFolderTree, type OrganizationChange } from "./source-folder-tree";
 import { chainRow, useChainNavigation } from "./chain-navigation";
 import { useServerEvent, useServerResync } from "./server-events";
 import { TopBar } from "@/components/top-bar";
-import { DeleteNodeDialog } from "@/components/delete-node-dialog";
+import { DeleteSourceDialog } from "@/components/delete-source-dialog";
 import { LatexGlyph } from "@/components/latex-glyph";
 
 /** The sortable columns (owner ruling: all three — consistency). */
@@ -123,6 +123,8 @@ export function ChainTableBody({
 	directory,
 	onOrganizationChange,
 	selectedFolders = new Set<string>(),
+	selectedSources = new Set<string>(),
+	onToggleSource = () => {},
 	onToggleFolder = () => {},
 	keyboardActive = true,
 }: {
@@ -130,6 +132,8 @@ export function ChainTableBody({
 	directory?: SourceDirectory;
 	onOrganizationChange?: OrganizationChange;
 	selectedFolders?: ReadonlySet<string>;
+	selectedSources?: ReadonlySet<string>;
+	onToggleSource?: (id: string, next: boolean) => void;
 	onToggleFolder?: (id: string, next: boolean) => void;
 	nodes: GraphNode[];
 	chains: GraphChain[];
@@ -160,7 +164,7 @@ export function ChainTableBody({
 	const [creatingFolder, setCreatingFolder] = useState(false);
 	const tableRef = useRef<HTMLDivElement>(null);
 	const searchRef = useRef<HTMLInputElement>(null);
-	useChainNavigation(tableRef, searchRef, keyboardActive);
+	const navigation = useChainNavigation(tableRef, searchRef, keyboardActive);
 	// Searches still expand sources/folders by default, but explicit keyboard
 	// or pointer collapses remain effective until the search changes.
 	const [searchFolds, setSearchFolds] = useState({ query, ids: new Set<string>() });
@@ -285,6 +289,7 @@ export function ChainTableBody({
 		return chainsForSelection(selectedNodes, storedChains);
 	}, [selection, byId, storedChains]);
 
+	const fullySelectedFolders = directory ? new Set([...selectedFolders].filter((id) => folderEntryCheck(directory, id, { sources: selectedSources, folders: selectedFolders }).checked)) : selectedFolders;
 	const nameOf = (id: string) => byId.get(id)?.name ?? id;
 	const dateOf = (id: string) => byId.get(id)?.createdAt.slice(0, 10) ?? "";
 	const dirIcon = (col: ChainSortCol) =>
@@ -370,7 +375,10 @@ export function ChainTableBody({
 
 				{creatingFolder && onOrganizationChange && <div className="flex items-center px-3 py-2" data-testid="new-folder-row">
 					<EditableSourceName name="" initiallyEditing onCancel={() => setCreatingFolder(false)}
-						onSave={async (name) => { await onOrganizationChange({ action: "create-folder", name, parentId: null }); setCreatingFolder(false); }} />
+						onSave={async (name) => {
+						const id = await onOrganizationChange({ action: "create-folder", name, parentId: null });
+						onQuery(""); if (id) navigation.focusRow(["folder", id]); setCreatingFolder(false);
+					}} />
 				</div>}
 				{groups.length === 0 && (directory?.organization.folders.length ?? 0) === 0 && (
 					<div data-testid="chain-table-nomatch" className="px-4 pt-3 text-xs text-muted-foreground">
@@ -379,6 +387,7 @@ export function ChainTableBody({
 				)}
 
 				<SourceFolderTree groups={groups} directory={directory} query={query} sort={sort} onAction={onOrganizationChange}
+					sourceSelection={selectMode ? undefined : { sources: selectedSources, folders: selectedFolders }}
 					expanded={expandedClusters} collapsedForSearch={foldedClusters} onToggleExpanded={toggleCluster} selection={selection} selectedFolders={selectedFolders}
 					onToggleNodes={onToggleNodes} onToggleFolder={onToggleFolder} allowEmptySelection={!selectMode} allSourceNodes={allSourceNodes}
 					renderSource={(group, depth) => {
@@ -410,12 +419,12 @@ export function ChainTableBody({
 							{/* The cluster row: birth-session group header. */}
 							<SourceDragRow {...chainRow(["source", group.key], depth, open)} kind="source" id={group.key} name={group.label ?? "unlabeled"} enabled={Boolean(onOrganizationChange && group.birth)} className="flex items-center gap-1 px-3 py-1.5">
 								<RowCheckbox
-									disabled={group.nodeIds.length === 0}
-									checked={selectedCount === group.nodeIds.length && group.nodeIds.length > 0}
-									indeterminate={selectedCount > 0 && selectedCount < group.nodeIds.length}
-									onToggle={(next) => onToggleNodes(group.nodeIds, next)}
+									disabled={selectMode ? group.nodeIds.length === 0 : !directory?.sources.some((s) => s.id === group.birth)}
+									checked={selectMode ? selectedCount === group.nodeIds.length && group.nodeIds.length > 0 : group.birth !== null && selectedSources.has(group.birth)}
+									indeterminate={selectMode ? selectedCount > 0 && selectedCount < group.nodeIds.length : false}
+									onToggle={(next) => { if (selectMode) onToggleNodes(group.nodeIds, next); else if (group.birth) onToggleSource(group.birth, next); }}
 									testid={`cluster-checkbox-${group.key}`}
-									label={`Select everything born in ${group.label ?? "unlabeled"}`}
+									label={selectMode ? `Select everything born in ${group.label ?? "unlabeled"}` : `Select source ${group.label ?? "unlabeled"}`}
 								/>
 								<Expander open={open} onClick={() => toggleCluster(group.key)} testid={`cluster-toggle-${group.key}`} label={`Expand cluster ${group.label ?? "unlabeled"}`} />
 								<button type="button" data-source-icon data-testid={`source-icon-${group.key}`} aria-expanded={open} aria-label={`Expand source ${group.label ?? "unlabeled"}`}
@@ -461,13 +470,13 @@ export function ChainTableBody({
 												aria-label={formatChainLine(chain, Object.fromEntries([...byId.entries()].map(([id, n]) => [id, { name: n.name }])))}
 												className="flex items-center gap-1 py-1 pl-12 pr-3"
 											>
-												<RowCheckbox
+												{selectMode ? <RowCheckbox
 													checked={selectedInChain === memberIds.length && memberIds.length > 0}
 													indeterminate={selectedInChain > 0 && selectedInChain < memberIds.length}
 													onToggle={(next) => onToggleNodes(memberIds, next)}
 													testid={`chain-checkbox-${chain.id}`}
 													label={`Select chain ${nameOf(chain.conclusion)}`}
-												/>
+												/> : <span aria-hidden="true" className="size-3.5 shrink-0" />}
 												<Expander open={chainOpen} onClick={() => onToggleChain(chain.id)} testid={`chain-toggle-${chain.id}`} label={`Expand chain ${nameOf(chain.conclusion)}`} />
 												{/* The chain line: proposition names as faint-outlined
 												    chips. THE LOGIC IS THE PAYLOAD (owner rulings,
@@ -531,12 +540,12 @@ export function ChainTableBody({
 															data-testid={`prop-row-${id}`}
 															className="flex items-start gap-2 py-1 pl-21 pr-3"
 														>
-															<RowCheckbox
+															{selectMode ? <RowCheckbox
 																checked={selection.has(id)}
 																onToggle={(next) => onToggleNodes([id], next)}
 																testid={`prop-checkbox-${id}`}
 																label={`Select node ${node.name}`}
-															/>
+															/> : <span aria-hidden="true" className="size-3.5 shrink-0" />}
 															<span className="min-w-0 flex-1 text-xs leading-relaxed text-muted-foreground">
 																{node.statement}
 															</span>
@@ -557,16 +566,15 @@ export function ChainTableBody({
 			{/* The floating selection bar (owner ruling: never shifts layout —
 			    the Google-Photos pattern). Appears only when something is
 			    selected; floats over the table's bottom edge. */}
-			{(selection.size > 0 || (!selectMode && selectedFolders.size > 0)) && (
+			{(selectMode ? selection.size > 0 : selectedSources.size > 0 || fullySelectedFolders.size > 0) && (
 				<div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-center pb-4">
 					<div
 						data-testid="chain-selection-bar"
 						className="pointer-events-auto flex items-center gap-3 rounded-full border bg-card px-4 py-2 shadow-lg"
 					>
 						<span data-testid="chain-selected-summary" className="text-xs font-medium">
-							{selection.size} {selection.size === 1 ? "node" : "nodes"} →{" "}
-							{derived.length} {derived.length === 1 ? "chain" : "chains"}
-							{!selectMode && selectedFolders.size > 0 && ` · ${selectedFolders.size} ${selectedFolders.size === 1 ? "empty folder" : "empty folders"}`}
+							{selectMode ? <>{selection.size} {selection.size === 1 ? "node" : "nodes"} → {derived.length} {derived.length === 1 ? "chain" : "chains"}</>
+								: <>{selectedSources.size} {selectedSources.size === 1 ? "source" : "sources"}{fullySelectedFolders.size > 0 && ` · ${fullySelectedFolders.size} ${fullySelectedFolders.size === 1 ? "folder" : "folders"}`}</>}
 						</span>
 						<button
 							type="button"
@@ -598,7 +606,7 @@ export function ChainTableBody({
 								type="button"
 								data-testid="chain-delete"
 								onClick={onDelete}
-								aria-label={selectedFolders.size > 0 ? "Delete selected nodes and empty folders" : `Delete ${selection.size} selected ${selection.size === 1 ? "node" : "nodes"}`}
+								aria-label="Delete selected sources and folders"
 								className="flex items-center gap-1.5 rounded-full border border-destructive/50 bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive transition-colors hover:bg-destructive/20"
 							>
 								<Trash2Icon aria-hidden="true" className="size-3.5" />
@@ -700,12 +708,21 @@ export function ChainTableOverlay({
 	const [internalSelection, setInternalSelection] = useState<ReadonlySet<string>>(() => new Set());
 	const [expandedClusters, setExpandedClusters] = useState<ReadonlySet<string>>(() => new Set());
 	const [expandedChains, setExpandedChains] = useState<ReadonlySet<string>>(() => new Set());
-	const [deleteOpen, setDeleteOpen] = useState(false);
+	const [deletion, setDeletion] = useState<{ sources: SourceEntry[]; folders: SourceFolder[] } | null>(null);
+	const deleteOpen = deletion !== null;
 	const [directory, setDirectory] = useState<SourceDirectory>();
 	const [directoryFailure, setDirectoryFailure] = useState("");
-	const [folderSelection, setFolderSelection] = useState<ReadonlySet<string>>(() => new Set());
+	const [entrySelection, setEntrySelection] = useState<SourceEntrySelection>(() => ({ sources: new Set(), folders: new Set() }));
+	useEffect(() => {
+		if (!directory) return;
+		setEntrySelection((previous) => {
+			const sources = new Set([...previous.sources].filter((id) => directory.sources.some((s) => s.id === id)));
+			const folders = new Set([...previous.folders].filter((id) => directory.organization.folders.some((f) => f.id === id)));
+			return sources.size === previous.sources.size && folders.size === previous.folders.size ? previous : { sources, folders };
+		});
+	}, [directory]);
 	const requestVersion = useRef(0);
-	const mutationTail = useRef<Promise<void>>(Promise.resolve());
+	const mutationTail = useRef<Promise<unknown>>(Promise.resolve());
 	const readDirectory = useCallback(async () => {
 		const version = ++requestVersion.current;
 		try {
@@ -736,13 +753,18 @@ export function ChainTableOverlay({
 					const entry = (body as SourceDirectory).sources.find((s) => s.id === action.id);
 					window.dispatchEvent(new CustomEvent(entry?.kind === "chat" ? "lh:chat-renamed" : "lh:source-renamed", { detail: { id: action.id, title: action.name } }));
 				}
+				return typeof body.createdFolderId === "string" ? body.createdFolderId : undefined;
 			} catch (error) { setDirectoryFailure(error instanceof Error ? error.message : String(error)); throw error; }
 		});
 		mutationTail.current = operation;
 		return operation;
 	};
-	const selectedFolders = new Set([...folderSelection].filter((id) => directory?.organization.folders.some((f) => f.id === id)
-		&& folderIsEmpty(directory.organization, id, new Set(directory.sources.map((s) => s.id)))));
+	const selectedSources = new Set([...entrySelection.sources].filter((id) => directory?.sources.some((s) => s.id === id)));
+	const selectedFolders = new Set([...entrySelection.folders].filter((id) => directory?.organization.folders.some((f) => f.id === id)));
+	const fullySelectedFolders = new Set([...selectedFolders].filter((id) => directory && folderEntryCheck(directory, id, { sources: selectedSources, folders: selectedFolders }).checked));
+	const toggleEntries = (kind: "source" | "folder", id: string, checked: boolean) => {
+		if (directory) setEntrySelection((previous) => toggleSourceEntries(directory, previous, kind, id, checked));
+	};
 
 	// Controlled when the caller lifts the selection (the practice pick
 	// set); internal (uncontrolled) otherwise — the delete flow's own.
@@ -775,11 +797,6 @@ export function ChainTableOverlay({
 
 	if (!open) return null;
 
-	const byId = new Map(nodes.map((n) => [n.id, n]));
-	const selectedNodes = [...selection].map((id) => byId.get(id)).filter((n): n is GraphNode => n !== undefined);
-	const derived = chainsForSelection(selectedNodes, storedChains);
-	const nodeIds = [...selection].sort();
-
 	const toggleNodes = (ids: string[], next: boolean) => {
 		const s = new Set(selection);
 		for (const id of ids) {
@@ -807,7 +824,9 @@ export function ChainTableOverlay({
 					directory={directory}
 					onOrganizationChange={directory ? changeOrganization : undefined}
 					selectedFolders={selectedFolders}
-					onToggleFolder={(id, next) => setFolderSelection((prev) => { const set = new Set(prev); if (next) set.add(id); else set.delete(id); return set; })}
+					selectedSources={selectedSources}
+					onToggleSource={(id, next) => toggleEntries("source", id, next)}
+					onToggleFolder={(id, next) => toggleEntries("folder", id, next)}
 					nodes={nodes}
 					chains={storedChains}
 					sessions={sessions}
@@ -828,32 +847,41 @@ export function ChainTableOverlay({
 					onToggleCluster={(key) => setExpandedClusters((prev) => toggleIn(prev, key))}
 					onToggleChain={(id) => setExpandedChains((prev) => toggleIn(prev, id))}
 					onToggleNodes={toggleNodes}
-					onClear={() => { applySelection(new Set()); setFolderSelection(new Set()); }}
-					onDelete={() => setDeleteOpen(true)}
+					onClear={() => { if (selectMode) applySelection(new Set()); else setEntrySelection({ sources: new Set(), folders: new Set() }); }}
+					onDelete={() => setDeletion({
+						sources: directory?.sources.filter((s) => selectedSources.has(s.id)) ?? [],
+						folders: directory?.organization.folders.filter((f) => fullySelectedFolders.has(f.id)) ?? [],
+					})}
 					onClose={onClose}
 					selectMode={selectMode}
 					onSelect={onClose}
 				/>
 			</div>
-			{deleteOpen && (
-				<DeleteNodeDialog
-					nodes={selectedNodes.map((n) => ({ id: n.id, name: n.name }))}
-					folders={directory?.organization.folders.filter((f) => selectedFolders.has(f.id)) ?? []}
-					onRemoveFolder={(id) => changeOrganization({ action: "delete-folder", id })}
-					onFoldersDeleted={(ids) => setFolderSelection((prev) => new Set([...prev].filter((id) => !ids.includes(id))))}
-					onClose={() => setDeleteOpen(false)}
-					onDeleted={(deadIds, graphRevision) => {
-						// Close the dialog; prune the dead ids from the
-						// selection (the rest of a big selection survives);
-						// announce the revision so GraphView refetches the
-						// snapshot — fresh nodes/edges flow back in as props.
-						setDeleteOpen(false);
-						const dead = new Set(deadIds);
-						applySelection(new Set([...selection].filter((id) => !dead.has(id))));
-						window.dispatchEvent(new CustomEvent("lh:graph-revision", { detail: { graphRevision } }));
-					}}
-				/>
-			)}
+			{!selectMode && <DeleteSourceDialog open={deleteOpen}
+				sources={deletion?.sources ?? []}
+				folders={deletion?.folders ?? []}
+				onClose={() => setDeletion(null)}
+				onDelete={(deleteSessions) => {
+					const operation = mutationTail.current.catch(() => {}).then(async () => {
+						let graphRevision: number | undefined;
+						try {
+							const response = await fetch("/api/graph/sources", { method: "DELETE", headers: { "Content-Type": "application/json" },
+								body: JSON.stringify({ sourceIds: deletion?.sources.map((s) => s.id) ?? [], folderIds: deletion?.folders.map((f) => f.id) ?? [], deleteSessions }) });
+							const body = await response.json();
+							if (!response.ok) throw new Error(typeof body.error === "string" ? body.error : "Could not delete sources.");
+							graphRevision = body.graphRevision;
+							requestVersion.current++; setDirectory(body as SourceDirectory); setDirectoryFailure("");
+							setEntrySelection({ sources: new Set(), folders: new Set() });
+						} finally {
+							// A failed response can still follow partial disk writes.
+							// Refresh graph content as well as the directory, in both home modes.
+							void readDirectory();
+							window.dispatchEvent(new CustomEvent("lh:graph-revision", { detail: { graphRevision } }));
+						}
+					});
+					mutationTail.current = operation; return operation;
+				}}
+			/>}
 		</>
 	);
 }

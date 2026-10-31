@@ -26,8 +26,9 @@ export function createSourceDirectory(deps: { chatStore: ChatStore; graphStore: 
 		}
 		return { organization, sources: [...entries.values()] };
 	}
-	function change(raw: unknown): SourceDirectory {
+	function change(raw: unknown): SourceDirectory & { createdFolderId?: string } {
 		let action;
+		let createdFolderId: string | undefined;
 		try { action = parseOrganizationAction(raw); }
 		catch (error) { throw new SourceOrganizationInputError((error as Error).message); }
 		const directory = read();
@@ -42,11 +43,13 @@ export function createSourceDirectory(deps: { chatStore: ChatStore; graphStore: 
 			}
 		} else {
 			let next;
-			try { next = applyOrganizationAction(directory.organization, action, new Set(directory.sources.map((s) => s.id)), freshFolder()); }
+			const fresh = freshFolder();
+			try { next = applyOrganizationAction(directory.organization, action, new Set(directory.sources.map((s) => s.id)), fresh); }
 			catch (error) { throw new SourceOrganizationInputError((error as Error).message); }
 			deps.sourceOrganizationStore.write(next);
+			if (action.action === "create-folder") createdFolderId = fresh.id;
 		}
-		return read();
+		return { ...read(), ...(createdFolderId ? { createdFolderId } : {}) };
 	}
 	/** Before starting the file's existing extraction pipeline. The source key
 	 * is the pipeline's unchanged path hash; no source text is stored here. */
