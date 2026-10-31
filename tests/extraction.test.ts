@@ -2111,8 +2111,14 @@ describe("digest-aware serialized extraction (the extractor is the assembler)", 
 				assert.ok(system.toolsAdded?.some((tool) => tool.name === "find_candidates"));
 				assert.ok(!system.toolsAdded?.some((tool) => tool.name === "find"));
 				const instructions = typeof system.content === "string" ? system.content : system.content.map((part) => part.text).join("\n");
-				assert.match(instructions, /QUICK, PRACTICAL EQUIVALENCE/);
+				assert.match(instructions, /REVIEW THE PROVIDED RECORDS/);
+				assert.match(instructions, /statement AND its matched aliases are accepted knowledge/);
 				assert.doesNotMatch(instructions, /WHOLE proposition|majority of its clauses/);
+				const view = capturedView(context);
+				const initial = JSON.parse(view.slice(view.indexOf("{")));
+				assert.deepEqual(initial.matches[0].candidateIds, ["n_seed"], "the model starts with candidates, not an instruction to fetch them");
+				assert.equal(initial.candidates[0].statement, "Liquid changes into vapor.");
+				assert.doesNotMatch(view, /Explore it with your tools|current knowledge graph has/);
 				return fauxAssistantMessage([fauxToolCall("find_candidates", { propositions: [{ id: "p1" }] }, { id: "lookup" })], { stopReason: "toolUse" });
 			},
 			(context) => {
@@ -2134,6 +2140,32 @@ describe("digest-aware serialized extraction (the extractor is the assembler)", 
 		assert.equal(stats.nodes, 0, "the candidate identity is used by the existing merger");
 		assert.equal(getGraph(ledgers).nodes.length, 1);
 		assert.ok(getGraph(ledgers).nodes[0]!.provenance.some((point) => point.chatId === ledgers.readSources()[0]!.id));
+	});
+
+	it("a supplied accepted alias can be matched and submitted in one auditor response, with no lookup", async () => {
+		const ledgers = memoryLedgers();
+		ledgers.appendNode({
+			id: "n_seed", name: "Legacy label", statement: "The original canonical statement.",
+			aliases: ["An amber canoe travels upstream."], createdAt: "2026-01-01T00:00:00Z",
+			provenance: [{ chatId: "old_source", messageId: "" }],
+		});
+		let calls = 0;
+		const pipeline = createExtractionPipeline({
+			chatStore, graphStore: ledgers,
+			extractor: submitModel("submit_findings", { propositions: [{ id: "p1", name: "Upstream travel", statement: "An amber canoe travels upstream.", aliases: [] }], chains: [] }),
+			auditor: fauxEngine([(context) => {
+				calls++;
+				const view = capturedView(context);
+				const initial = JSON.parse(view.slice(view.indexOf("{")));
+				assert.deepEqual(initial.candidates[0].matchedAliases, ["An amber canoe travels upstream."]);
+				assert.doesNotMatch(view, /PRIVATE SOURCE PASSAGE/);
+				return fauxAssistantMessage([fauxToolCall("submit_review", { links: [{ id: "p1", linkTo: "n_seed" }] }, { id: "review" })], { stopReason: "toolUse" });
+			}]),
+		});
+		const stats = await pipeline.importNotes({ filePath: "synthetic-alias.txt", text: "PRIVATE SOURCE PASSAGE" });
+		assert.equal(calls, 1);
+		assert.equal(stats.nodes, 0);
+		assert.equal(getGraph(ledgers).nodes.length, 1);
 	});
 
 	it("a seeded digest rides the extractor's view: mixed-namespace chains reference existing ids VERBATIM", async () => {

@@ -1,9 +1,10 @@
 import { Type } from "typebox";
+import { randomUUID } from "node:crypto";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { serverExecute } from "../tool-execute.ts";
 import { getGraph, graphSessionIndex, graphSessionPropositions } from "../../core/graph.ts";
 import type { ChatStore, GraphStore } from "../../core/ports.ts";
-import { createPropositionCandidateSearch, propositionCandidateBatch, type CandidateProposition } from "../../core/proposition-candidates.ts";
+import { createPropositionCandidateSearch, propositionCandidateBatch, type CandidateBatch, type CandidateProposition, type CandidateRequest } from "../../core/proposition-candidates.ts";
 
 /**
  * THE PROBER'S GRAPH TOOLS (wave 7, owner-locked 2026-09-23): context
@@ -99,7 +100,25 @@ export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentToo
  * Read-only, pure core seams, same ports the snapshot reads.
  */
 
-export function auditorGraphTools(ctx: GraphToolContext, propositions: readonly CandidateProposition[] = []): Record<string, AgentTool<any>> {
+export interface AuditorCandidateBatch {
+	matches: Array<{ propositionId: string; candidateIds: string[]; nextCursor: string | null }>;
+	candidates: CandidateBatch["candidates"];
+}
+
+interface CandidateLookup {
+	id: string;
+	hints?: readonly string[];
+	cursor?: string;
+}
+
+/** Prepare the first page in code, and keep all continuations bound to this
+ * audit's immutable queries. A new search cannot accidentally inherit an old
+ * offset. Tokens are opaque, per-audit and stable when a request is repeated;
+ * none of this suppresses previously returned records. */
+export function prepareAuditorReview(ctx: GraphToolContext, propositions: readonly CandidateProposition[] = []): {
+	initialCandidates: AuditorCandidateBatch;
+	tools: Record<string, AgentTool<any>>;
+} {
 	const deps = { chatStore: ctx.chatStore, graphStore: ctx.graphStore };
 	const findInput = Type.Object({
 		propositions: Type.Array(Type.Object({
@@ -107,26 +126,51 @@ export function auditorGraphTools(ctx: GraphToolContext, propositions: readonly 
 			hints: Type.Optional(Type.Array(Type.String({ minLength: 1 }), {
 				description: "Optional alternative words or phrases to add to the search. Plain text, not glob patterns.",
 			})),
-			offset: Type.Optional(Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER, description: "For more candidates, use nextOffset from this proposition's previous result, keeping the same hints. Default 0." })),
-		}), { minItems: 1, description: "Look up several or all proposed propositions in one batch. Include each id once." }),
-	});
+			cursor: Type.Optional(Type.String({ minLength: 1, description: "Continue a previous query with its nextCursor. Do not supply hints with a cursor; its query is already fixed. Omit cursor to start a new search at its first page." })),
+		}, { additionalProperties: false }), { minItems: 1, description: "Look up only findings needing a specific additional search. Include each id once." }),
+	}, { additionalProperties: false });
 	let search: ReturnType<typeof createPropositionCandidateSearch> | undefined;
-	return {
+	const continuations = new Map<string, CandidateRequest>();
+	const tokens = new Map<string, string>();
+	function lookup(requests: readonly CandidateLookup[]): AuditorCandidateBatch {
+		const queries = requests.map((request): CandidateRequest => {
+			if (request.cursor === undefined) return { id: request.id, hints: request.hints ? [...request.hints] : undefined };
+			if (request.hints !== undefined) throw new Error("A continuation already fixes its query. Omit hints, or omit cursor to start a new search.");
+			const query = continuations.get(request.cursor);
+			if (!query || query.id !== request.id) throw new Error("Unknown cursor for this finding and audit. Start a fresh lookup without cursor.");
+			return query;
+		});
+		search ??= createPropositionCandidateSearch(getGraph(deps.graphStore).nodes);
+		const batch = propositionCandidateBatch(search, propositions, queries);
+		return {
+			matches: batch.matches.map((match, index) => {
+				let nextCursor: string | null = null;
+				if (match.nextOffset !== null) {
+					const query = { ...queries[index]!, offset: match.nextOffset };
+					const key = JSON.stringify([query.id, query.hints ?? [], query.offset]);
+					nextCursor = tokens.get(key) ?? randomUUID();
+					tokens.set(key, nextCursor);
+					continuations.set(nextCursor, query);
+				}
+				return { propositionId: match.propositionId, candidateIds: match.candidateIds, nextCursor };
+			}),
+			candidates: batch.candidates,
+		};
+	}
+	const initialCandidates = lookup([...new Set(propositions.map((proposition) => proposition.id))].map((id) => ({ id })));
+	const tools: Record<string, AgentTool<any>> = {
 		find_candidates: {
 			name: "find_candidates",
 			label: "find_candidates",
 			description:
 				"Find existing proposition candidates for a batch of proposed ids, using their full text and optional hints. " +
 				"Ranks word overlap across names, statements and aliases, not exact phrases or glob patterns. " +
-				"Returns five ranked candidates per proposition, with totalCandidates, hasMore and nextOffset. " +
+				"The first page is already in your input. A new search returns five ranked candidates; nextCursor continues that exact query. " +
 				"Each candidate's full statement and relevant matched aliases appear once in candidates; matches lists its ids per finding. " +
-				"Ranking is not an equivalence verdict; hasMore counts lexical matches, not work you must exhaust. " +
+				"An unmatched finding can remain new; a continuation is an option, not a requirement to keep searching. " +
 				"There is no cross-call suppression: repeating a request returns its full page again.",
 			parameters: findInput,
-			execute: serverExecute("find_candidates", findInput, async (input) => {
-				search ??= createPropositionCandidateSearch(getGraph(deps.graphStore).nodes);
-				return propositionCandidateBatch(search, propositions, input.propositions);
-			}),
+			execute: serverExecute("find_candidates", findInput, async (input) => lookup(input.propositions)),
 		},
 		list_sessions: {
 			name: "list_sessions",
@@ -161,4 +205,5 @@ export function auditorGraphTools(ctx: GraphToolContext, propositions: readonly 
 			}),
 		},
 	};
+	return { initialCandidates, tools };
 }

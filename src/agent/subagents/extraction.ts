@@ -29,7 +29,7 @@ import { emit } from "../../core/events.ts";
 import { settleGraphLayout } from "../../core/layout-settle.ts";
 import { batchRuns, coverageOf, messageViewLines } from "../../core/coverage.ts";
 import { failedOutputCallIds, type LhMessage } from "../../core/native-messages.ts";
-import { auditorGraphTools } from "../tools/graph.ts";
+import { prepareAuditorReview } from "../tools/graph.ts";
 import { runSubmitAgent, healStringifiedArrays } from "./submit-agent.ts";
 
 /**
@@ -534,42 +534,29 @@ function runNotesExtractor(
 // ─── the auditor ───────────────────────────────────────────────────────────
 
 
-const AUDITOR_INSTRUCTIONS = `You are the linking stage of a learning application's extraction pipeline. An extractor
-has read a source (a teaching session, or the author's personal notes) and reported findings: propositions and
-their reasoning chains. You NEVER see the source itself — the extractor is fully trusted, and you do not re-check
-its work. Your job is IDENTITY: connecting those findings to the CURRENT knowledge graph, preparing the merge.
+const AUDITOR_INSTRUCTIONS = `You reconcile newly extracted knowledge with existing graph records. The extractor has
+already read the source and supplied its findings. Your task is to identify useful matches, not verify the source.
 
-FIND CANDIDATES EFFICIENTLY:
-Usually start with one find_candidates batch for the proposed ids. The tool already has their names, statements
-and aliases; you do not need to rewrite them as queries. It returns ranked lexical candidates, five per finding,
-with full statements and relevant alternative wordings. Candidate text is printed once per batch; matches lists
-which candidate ids belong to each finding. Ranking is a search aid, NOT a decision about equivalence.
+REVIEW THE PROVIDED RECORDS:
+Your input already contains five ranked candidates per finding (or fewer when fewer exist). matches associates
+finding ids with candidateIds; candidates contains each record once. For each finding, decide whether its main
+knowledge point is already represented by one of these records. Link useful paraphrases, compressions and different
+explanations of that same knowledge point. Otherwise leave the finding new. Shared subject matter alone is not a match.
 
-If a likely match seems missing, add meaningful alternative words in hints or use list_sessions/list_propositions
-to explore a promising source. These are optional fallbacks, not a required graph tour. hasMore only means there
-are more word-overlap results: do not exhaust pages or synonyms just because they exist. Use nextOffset with the
-same hints when another page would actually help. Reuse candidates already seen rather than fetching them again.
+A record's statement AND its matched aliases are accepted knowledge already in the graph. Use either as evidence
+of what it represents; its name is just a label. If an accepted alias already states the incoming knowledge point,
+recognize that match rather than reconsidering why the alias was grouped there. You are not redesigning earlier
+nodes or finding the ideal granularity. Make a practical judgment, not a proof of exact logical equivalence.
 
-MAKE A QUICK, PRACTICAL EQUIVALENCE JUDGMENT:
-Would a proposed statement and a candidate usefully represent the same proposition in the learner's graph?
-Actively LINK paraphrases, compressions, and different explanations or levels of detail of the same knowledge
-point. Exact logical equivalence is unnecessary. Read the candidate's statement and any matched aliases, make a
-reasonable judgment, and move on. Your primary work is SEARCH, not proving equivalence or repeatedly debating
-small differences. Merely sharing a topic is not enough: genuinely different claims stay separate.
+After reviewing the candidates, an unmatched finding can remain new. You do not need to establish that no equivalent
+exists anywhere in the graph. Additional tools are for a specific missing candidate or a named, promising source,
+not for confirming every negative judgment. A fresh find_candidates search can add alternative wording; nextCursor
+continues its fixed query. Once a finding is decided, revisit it only if another lookup actually supplies new evidence.
 
-For a match, add { "id": <the proposed proposition's id>, "linkTo": <the EXISTING node's id you have seen> } to
-"links". The existing node keeps its canonical name and statement; the incoming wording joins its aliases and
-provenance. Otherwise add nothing: a new node is created. Do not force every finding to match a candidate.
-
-Once you have useful candidates and have made these practical judgments, SUBMIT. Further exploration should
-address a concrete search gap, not establish exhaustive coverage or make the search feel more thorough.
-
-Your deliverable is ONLY the identity verdicts: "links". NEVER restate the propositions —
-the merger already has them. You NEVER create relations between propositions — they come from the
-extractor alone, and the batch connects to the existing graph ONLY through the equivalences you identify. Your
-entire deliverable is ONE submit_review call.
-
-Include the "links" field even when empty — "links": [] when nothing links. NEVER omit it because it is empty.`;
+Finish with ONE submit_review call: { "links": [{ "id": <finding id>, "linkTo": <existing record id> }] }.
+Include only useful matches to existing records you have seen. Omitted findings become new nodes; use "links": []
+when none match. Do not restate findings, invent relations, or justify verdicts in the output. The merger retains the
+existing record's name and statement and adds the incoming wording as an alias with its provenance.`;
 
 /** The auditor — one shape for both front doors now (the notes schema was
  *  identical once attribution died). An agentic loop: graph-exploration
@@ -961,15 +948,16 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		const t0 = performance.now();
 
 		// The auditor NEVER sees the source (owner 2026-09-27): findings
-		// JSON + identity instructions, and the graph reached through
-		// exploration tools instead of an injected dump. The proposition
+		// JSON + an initial ranked candidate batch, not a global graph dump.
+		// Further graph reads remain optional. The proposition
 		// projection omits messageId (2026-10-13): the auditor is
 		// IDENTITY-only and never sees the passages, so anchors are useless
 		// to it — they add cognitive load, not signal.
+		const review = prepareAuditorReview({ chatStore, graphStore }, findings.propositions);
 		const auditResult = await runAuditor(
 			stageEngine("auditor", deps.auditor),
 			sourceId,
-			`Proposed findings from the extractor (the source itself is not available to you — the extractor is fully trusted; the propositions only — the reasoning chains are the merger's business, owner 2026-09-30):\n\n` +
+			`Review these proposed findings against the supplied existing records. matches points from finding ids to candidateIds; candidates contains those records:\n\n` +
 				`${JSON.stringify(
 					{
 						propositions: findings.propositions.map((p) => ({
@@ -978,17 +966,17 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 							statement: p.statement,
 							aliases: p.aliases,
 						})),
+						...review.initialCandidates,
 					},
 					null,
 					2,
-				)}\n\n` +
-				`The current knowledge graph has ${graph.nodes.length} node(s). Explore it with your tools and link what links.`,
+				)}`,
 			signal,
 			(usage, model, step, finishReason, tools) => {
 				recordStep(jobKey, "auditor", callUsage(usage), model);
 				console.info(`[extraction] auditor step ${step}: ${finishReason}, tools: ${tools}`);
 			},
-			auditorGraphTools({ chatStore, graphStore }, findings.propositions),
+			review.tools,
 		);
 		console.info(
 			`[extraction ${jobKey}] audit: ${findings.propositions.length} propositions through, ` +
