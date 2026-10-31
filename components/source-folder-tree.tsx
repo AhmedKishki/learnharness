@@ -4,6 +4,7 @@ import { createContext, useContext, useLayoutEffect, useRef, useState, type Drag
 import { ChevronRightIcon, FolderIcon, FolderOpenIcon } from "lucide-react";
 import { canMoveFolder, folderIsEmpty, fuzzyScore, placementOf, type OrganizationAction, type SourceDirectory } from "@/src/core";
 import type { ChainSort } from "./chain-table";
+import { chainRow } from "./chain-navigation";
 
 export type OrganizationChange = (action: OrganizationAction) => Promise<void>;
 const DRAG_TYPE = "application/x-learnharness-source";
@@ -97,11 +98,12 @@ interface TreeSource {
 	key: string; birth: string | null; label: string | null; nodeIds: string[]; newestCreatedAt: string;
 }
 export function SourceFolderTree<T extends TreeSource>({ groups, directory, query, sort, renderSource, onAction, expanded,
-	onToggleExpanded, selection, selectedFolders, onToggleNodes, onToggleFolder, allSourceNodes, allowEmptySelection = true }: {
+	onToggleExpanded, selection, selectedFolders, onToggleNodes, onToggleFolder, allSourceNodes, allowEmptySelection = true, collapsedForSearch }: {
 	groups: T[]; directory?: SourceDirectory; query: string; sort: ChainSort;
 	renderSource: (source: T, depth: number) => ReactNode;
 	allSourceNodes?: ReadonlyMap<string, ReadonlySet<string>>;
 	allowEmptySelection?: boolean;
+	collapsedForSearch?: ReadonlySet<string>;
 	onAction?: OrganizationChange; expanded: ReadonlySet<string>; onToggleExpanded: (id: string) => void;
 	selection: ReadonlySet<string>; selectedFolders: ReadonlySet<string>;
 	onToggleNodes: (ids: string[], next: boolean) => void; onToggleFolder: (id: string, next: boolean) => void;
@@ -166,13 +168,13 @@ export function SourceFolderTree<T extends TreeSource>({ groups, directory, quer
 		return items.map((item) => {
 			if (item.kind === "source") return <div key={item.id} {...dropProps(parentId)}>{renderSource(item.source, depth)}</div>;
 			const folder = item.folder;
-			const open = search || expanded.has(folder.id);
+			const open = search ? !collapsedForSearch?.has(folder.id) : expanded.has(folder.id);
 			const members = nodeIds(folder.id);
 			const empty = folderIsEmpty(state, folder.id, ids);
 			const selectedCount = members.filter((id) => selection.has(id)).length;
 			const hasChildren = state.folders.some((f) => f.parentId === folder.id && visibleFolder(f.id)) || groups.some((g) => parentOf(g) === folder.id);
 			return <div key={folder.id} data-testid={`source-folder-${folder.id}`} className="relative" {...dropProps(folder.id)}>
-				<SourceDragRow kind="folder" id={folder.id} name={folder.name} enabled={Boolean(onAction)} data-testid={`folder-row-${folder.id}`}
+				<SourceDragRow {...chainRow(["folder", folder.id], depth, open)} kind="folder" id={folder.id} name={folder.name} enabled={Boolean(onAction)} data-testid={`folder-row-${folder.id}`}
 					data-drop-active={dropTarget === folder.id}
 					className={`flex items-center gap-1 py-1.5 pr-3 transition-colors ${!open || !hasChildren ? "border-b border-transparent" : ""} ${dropTarget === folder.id ? "bg-accent/50" : ""}`}
 					style={{ paddingLeft: 12 + depth * 36 }}>

@@ -18,7 +18,7 @@ Press **?** outside a text field for the in-app cheat sheet.
 | New session | Mod+N |
 | Rename current session | F2 |
 | Toggle all your thinking in the session | Mod+T |
-| Find in session / search graph nodes | Mod+F |
+| Find in session / search graph or chains view | Mod+F |
 | Shortcut cheat sheet | ? |
 
 Surface-specific actions require their surface to be mounted. Bare shortcuts
@@ -89,6 +89,22 @@ While a select question is expanded and active:
 Text-only questions have no answer-row machine; their answer field uses the
 submission conventions above.
 
+## Chains view
+
+- **Mod+F** focuses the chains search while the view is open, rather than the
+  graph search underneath it. **↓** from that field enters the first result;
+  the other arrows retain their text-editing meaning there.
+- **↑/↓** move between siblings in the current layer, skipping expanded
+  descendants and stopping at either end without wrapping.
+- **→** expands the highlighted row and enters its first child: folders →
+  sources → chains → propositions. A leaf stays where it is.
+- **←** returns to the parent and collapses that parent's contents. At the top
+  level, it collapses the highlighted row if open.
+- The whole active row is highlighted and scrolled into view. This focus is
+  separate from checkbox selection; navigation does not select graph nodes.
+  Clicking a row establishes the navigation position. Rename inputs keep their
+  normal text-editing arrow keys; foreground menus/dialogs take priority.
+
 ## Search and menus
 
 - **Sessions search (Mod+Shift+F):** opens the sidebar if needed and focuses its
@@ -100,7 +116,8 @@ submission conventions above.
   **Enter** picks the walked result or the first result. Editing the query resets
   the walk. Menus without a search field instead move button focus with wrapping
   **↑/↓**, support **Home/End**, and use native **Enter** activation.
-- **Find (Mod+F):** in the graph, focuses node search. In a session, opens a
+- **Find (Mod+F):** in the graph, focuses node search; with the chains view
+  open, focuses that view's search instead. In a session, opens a
   literal, case-insensitive search of displayed session text, including offscreen
   scroll content but excluding hidden/collapsed content, draft fields, and embedded
   documents. **Enter / Shift+Enter** in the Find field move to the next/previous
@@ -124,4 +141,5 @@ submission conventions above.
   [model menus](../components/settings/model-menu.tsx),
   [menu shell](../components/menu-shell.tsx),
   [session Find](../components/session-find.tsx),
-  [displayed-text matching](../components/session-find-dom.ts).
+  [displayed-text matching](../components/session-find-dom.ts),
+  [chains navigation](../components/chain-navigation.ts).

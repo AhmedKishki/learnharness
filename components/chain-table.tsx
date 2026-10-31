@@ -71,6 +71,7 @@ import {
 import { chainsForSelection, folderIsEmpty, formatChainLine, fuzzyScore, sourceFileLabel } from "@/src/core";
 import type { GraphChain, GraphNode, SourceDirectory } from "@/src/core";
 import { EditableSourceName, SourceDragRow, sourceNameMatches, SourceFolderTree, type OrganizationChange } from "./source-folder-tree";
+import { chainRow, useChainNavigation } from "./chain-navigation";
 import { useServerEvent, useServerResync } from "./server-events";
 import { TopBar } from "@/components/top-bar";
 import { DeleteNodeDialog } from "@/components/delete-node-dialog";
@@ -123,7 +124,9 @@ export function ChainTableBody({
 	onOrganizationChange,
 	selectedFolders = new Set<string>(),
 	onToggleFolder = () => {},
+	keyboardActive = true,
 }: {
+	keyboardActive?: boolean;
 	directory?: SourceDirectory;
 	onOrganizationChange?: OrganizationChange;
 	selectedFolders?: ReadonlySet<string>;
@@ -155,6 +158,22 @@ export function ChainTableBody({
 	onSelect?: () => void;
 }) {
 	const [creatingFolder, setCreatingFolder] = useState(false);
+	const tableRef = useRef<HTMLDivElement>(null);
+	const searchRef = useRef<HTMLInputElement>(null);
+	useChainNavigation(tableRef, searchRef, keyboardActive);
+	// Searches still expand sources/folders by default, but explicit keyboard
+	// or pointer collapses remain effective until the search changes.
+	const [searchFolds, setSearchFolds] = useState({ query, ids: new Set<string>() });
+	useEffect(() => { setSearchFolds({ query, ids: new Set() }); }, [query]);
+	const foldedClusters = searchFolds.query === query ? searchFolds.ids : new Set<string>();
+	const toggleCluster = (id: string) => {
+		if (!query.trim()) { onToggleCluster(id); return; }
+		setSearchFolds((previous) => {
+			const ids = new Set(previous.query === query ? previous.ids : []);
+			if (ids.has(id)) ids.delete(id); else ids.add(id);
+			return { query, ids };
+		});
+	};
 	const byId = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
 	const sourceRecords = useMemo(() => new Map(directory?.sources.map((s) => [s.id, s])), [directory]);
 	const matchesSource = useCallback((birth: string) => sourceNameMatches(directory, birth,
@@ -272,7 +291,7 @@ export function ChainTableBody({
 		sort.col !== col ? null : sort.dir === 1 ? <ChevronUpIcon className="size-3" /> : <ChevronDownIcon className="size-3" />;
 
 	return (
-		<div data-testid="chain-table" className="relative flex h-full min-h-0 flex-col">
+		<div ref={tableRef} tabIndex={-1} data-testid="chain-table" className="relative flex h-full min-h-0 flex-col outline-none [&_[data-chain-nav-active=true]]:bg-accent/50 [&_[data-chain-nav-row]]:outline-none [&_[data-chain-nav-row]]:scroll-mt-8 [&_[data-chain-nav-row]]:scroll-mb-16">
 			{/* THE shared top bar (standardization ruling): drag mechanics,
 			    sidebar reopen, traffic-light gutter — the same element as every
 			    chat surface. NO TITLE (owner round 11, 2026-10-05): the serif
@@ -289,6 +308,7 @@ export function ChainTableBody({
 				<div className="relative shrink-0">
 					<SearchIcon className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
 					<input
+						ref={searchRef}
 						value={query}
 						data-testid="chain-table-search"
 						onChange={(e) => onQuery(e.target.value)}
@@ -359,10 +379,10 @@ export function ChainTableBody({
 				)}
 
 				<SourceFolderTree groups={groups} directory={directory} query={query} sort={sort} onAction={onOrganizationChange}
-					expanded={expandedClusters} onToggleExpanded={onToggleCluster} selection={selection} selectedFolders={selectedFolders}
+					expanded={expandedClusters} collapsedForSearch={foldedClusters} onToggleExpanded={toggleCluster} selection={selection} selectedFolders={selectedFolders}
 					onToggleNodes={onToggleNodes} onToggleFolder={onToggleFolder} allowEmptySelection={!selectMode} allSourceNodes={allSourceNodes}
 					renderSource={(group, depth) => {
-					const open = searching || expandedClusters.has(group.key);
+					const open = searching ? !foldedClusters.has(group.key) : expandedClusters.has(group.key);
 					const selectedCount = group.nodeIds.filter((id) => selection.has(id)).length;
 					return (
 						<div
@@ -388,7 +408,7 @@ export function ChainTableBody({
 								/>
 							)}
 							{/* The cluster row: birth-session group header. */}
-							<SourceDragRow kind="source" id={group.key} name={group.label ?? "unlabeled"} enabled={Boolean(onOrganizationChange && group.birth)} className="flex items-center gap-1 px-3 py-1.5">
+							<SourceDragRow {...chainRow(["source", group.key], depth, open)} kind="source" id={group.key} name={group.label ?? "unlabeled"} enabled={Boolean(onOrganizationChange && group.birth)} className="flex items-center gap-1 px-3 py-1.5">
 								<RowCheckbox
 									disabled={group.nodeIds.length === 0}
 									checked={selectedCount === group.nodeIds.length && group.nodeIds.length > 0}
@@ -397,9 +417,9 @@ export function ChainTableBody({
 									testid={`cluster-checkbox-${group.key}`}
 									label={`Select everything born in ${group.label ?? "unlabeled"}`}
 								/>
-								<Expander open={open} onClick={() => onToggleCluster(group.key)} testid={`cluster-toggle-${group.key}`} label={`Expand cluster ${group.label ?? "unlabeled"}`} />
+								<Expander open={open} onClick={() => toggleCluster(group.key)} testid={`cluster-toggle-${group.key}`} label={`Expand cluster ${group.label ?? "unlabeled"}`} />
 								<button type="button" data-source-icon data-testid={`source-icon-${group.key}`} aria-expanded={open} aria-label={`Expand source ${group.label ?? "unlabeled"}`}
-									onClick={() => onToggleCluster(group.key)} className="flex h-5 w-3.5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+									onClick={() => toggleCluster(group.key)} className="flex h-5 w-3.5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
 									{open ? <BookOpenIcon className="size-3.5 shrink-0" /> : <BookIcon className="size-3.5 shrink-0" />}
 								</button>
 								{onOrganizationChange && group.birth && group.kind !== null
@@ -436,6 +456,7 @@ export function ChainTableBody({
 													/>
 												)}
 											<div
+												{...chainRow(["chain", group.key, chain.id], depth + 1, chainOpen)}
 												data-testid={`chain-row-${chain.id}`}
 												aria-label={formatChainLine(chain, Object.fromEntries([...byId.entries()].map(([id, n]) => [id, { name: n.name }])))}
 												className="flex items-center gap-1 py-1 pl-12 pr-3"
@@ -506,6 +527,7 @@ export function ChainTableBody({
 													return (
 														<div
 															key={id}
+															{...chainRow(["prop", group.key, chain.id, id], depth + 2)}
 															data-testid={`prop-row-${id}`}
 															className="flex items-start gap-2 py-1 pl-21 pr-3"
 														>
@@ -781,6 +803,7 @@ export function ChainTableOverlay({
 			>
 				{directoryFailure && <p role="alert" className="px-3 py-1 text-xs text-red-400">{directoryFailure}</p>}
 				<ChainTableBody
+					keyboardActive={!deleteOpen}
 					directory={directory}
 					onOrganizationChange={directory ? changeOrganization : undefined}
 					selectedFolders={selectedFolders}

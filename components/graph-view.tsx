@@ -952,14 +952,8 @@ export function GraphView({
 
 	// Search panel state: the query text + the settings section toggle.
 	const [query, setQuery] = useState("");
-	// ⌘F (shortcut wave C): the find event focuses the node search —
-	// surface-scoped, dispatched as lh:kbd-find (only this page listens).
+	// Surface-scoped Find: the chains overlay owns it while open.
 	const searchInputRef = useRef<HTMLInputElement>(null);
-	useEffect(() => {
-		const onFind = () => searchInputRef.current?.focus();
-		window.addEventListener("lh:kbd-find", onFind);
-		return () => window.removeEventListener("lh:kbd-find", onFind);
-	}, []);
 	// Render settings: SERVER-persisted (data/render-settings.json via
 	// /api/graph/render-settings) — sizes AND the region/physics sections
 	// (user-facing since 2026-09-13; the dev-session era is over). Loaded
@@ -1043,6 +1037,12 @@ export function GraphView({
 	// The chain table overlay (chains-overlay plan, 2026-09-29) —
 	// component-local: a browsing surface, not graph state.
 	const [chainsOpen, setChainsOpen] = useState(false);
+	useEffect(() => {
+		if (chainsOpen) return;
+		const onFind = () => searchInputRef.current?.focus();
+		window.addEventListener("lh:kbd-find", onFind);
+		return () => window.removeEventListener("lh:kbd-find", onFind);
+	}, [chainsOpen]);
 	// PRACTICE SELECT (2026-10-04): the parent's chip drives the select
 	// mode; closing (either the picker's confirm or its X) reports back so
 	// the chip's open state and the table's never disagree.
