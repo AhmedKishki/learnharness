@@ -31,6 +31,13 @@ it("source inventory includes unextracted chats and zero-graph imported books; o
 	assert.match(html, /Not yet extracted/); assert.match(html, /Named book/); assert.doesNotMatch(html, /original.pdf/);
 	assert.match(html, /lucide-book/); assert.match(html, /lucide-folder/);
 	assert.match(html, /data-testid="add-source-folder"/); assert.match(html, /data-testid="source-root-drop"/);
+	assert.doesNotMatch(html, /Top level/);
+	assert.match(html, /data-testid="folder-thread-f1"[^>]*style="left:37px"/);
+	assert.match(html, /data-testid="folder-thread-f2"[^>]*style="left:73px"/);
+	assert.match(html, /data-testid="source-separator-notes"[^>]*style="left:1px"/);
+	assert.match(html, /data-testid="folder-separator-f2"[^>]*style="left:37px"/);
+	assert.match(html, /data-testid="folder-icon-f2"[^>]*aria-expanded="true"/);
+	assert.match(html, /data-testid="source-icon-notes"[^>]*aria-expanded="false"/);
 	assert.match(html, /data-testid="cluster-group-notes"[^>]*style="margin-left:72px"/);
 	assert.doesNotMatch(html, /No matching chains/);
 });
@@ -39,6 +46,12 @@ it("nested folders aggregate unique graph member counts, keep three-column sorti
 	assert.match(html, /data-testid="folder-checkbox-f1"[^>]*checked/); assert.match(html, /data-testid="folder-checkbox-f2"[^>]*checked/);
 	assert.match(html, /data-testid="sort-name"/); assert.match(html, /data-testid="sort-props"/); assert.match(html, /data-testid="sort-created"/);
 	assert.match(html, /lucide-book-open/); assert.match(html, /draggable="true"/);
+});
+it("collapsed folders have no dangling rail, while expanded folders reuse the source/chain bracket grammar", () => {
+	assert.doesNotMatch(render(), /data-testid="folder-thread-/);
+	const html = render({ expandedClusters: new Set(["f1"]) });
+	assert.match(html, /data-testid="folder-thread-f1"[^>]*bottom-\[8px\][^>]*top-\[23px\]/);
+	assert.doesNotMatch(html, /data-testid="folder-thread-f2"/);
 });
 it("re-import record dates do not change existing graph groups' Created dates", () => {
 	const newer = { ...directory, sources: directory.sources.map((s) => s.id === "notes" ? { ...s, createdAt: "2099-01-01" } : s) };

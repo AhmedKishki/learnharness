@@ -70,7 +70,7 @@ import {
 } from "lucide-react";
 import { chainsForSelection, folderIsEmpty, formatChainLine, fuzzyScore, sourceFileLabel } from "@/src/core";
 import type { GraphChain, GraphNode, SourceDirectory } from "@/src/core";
-import { EditableSourceName, sourceDragProps, sourceNameMatches, SourceFolderTree, type OrganizationChange } from "./source-folder-tree";
+import { EditableSourceName, SourceDragRow, sourceNameMatches, SourceFolderTree, type OrganizationChange } from "./source-folder-tree";
 import { useServerEvent, useServerResync } from "./server-events";
 import { TopBar } from "@/components/top-bar";
 import { DeleteNodeDialog } from "@/components/delete-node-dialog";
@@ -315,10 +315,10 @@ export function ChainTableBody({
 			    two-column steps — chains pl-12 aligned with the folder icon,
 			    statements pl-21 where a chain icon would sit).
 			    All three columns sort, small chevron on active. */}
-			<div className="min-h-0 flex-1 overflow-y-auto">
+			<div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
 				{/* The TOP rule (owner round 5: the table is framed — a line under
 			    the header, a line under the last group, lines between groups). */}
-				<div className="sticky top-0 z-10 flex items-center gap-1 border-b border-border/60 bg-background/80 px-3 py-1.5 text-[11px] uppercase tracking-widest text-muted-foreground/70 backdrop-blur">
+				<div className="sticky top-0 z-10 flex shrink-0 items-center gap-1 border-b border-border/60 bg-background/80 px-3 py-1.5 text-[11px] uppercase tracking-widest text-muted-foreground/70 backdrop-blur">
 					<button
 						type="button"
 						data-testid="sort-name"
@@ -371,7 +371,7 @@ export function ChainTableBody({
 							// The horizontal rules (owner rulings, rounds 2 + 5): between
 							// cluster groups AND under the last one — the table is framed
 							// top (header) and bottom. Never on individual rows.
-							className="relative border-b border-border/60"
+							className="relative border-b border-transparent"
 							style={{ marginLeft: depth * 36 }}
 						>
 							{/* The TREE THREAD (owner rounds 5–6): a vertical guide at the
@@ -388,7 +388,7 @@ export function ChainTableBody({
 								/>
 							)}
 							{/* The cluster row: birth-session group header. */}
-							<div className="flex items-center gap-1 px-3 py-1.5" {...(onOrganizationChange && group.birth ? sourceDragProps("source", group.birth) : {})}>
+							<SourceDragRow kind="source" id={group.key} name={group.label ?? "unlabeled"} enabled={Boolean(onOrganizationChange && group.birth)} className="flex items-center gap-1 px-3 py-1.5">
 								<RowCheckbox
 									disabled={group.nodeIds.length === 0}
 									checked={selectedCount === group.nodeIds.length && group.nodeIds.length > 0}
@@ -398,9 +398,10 @@ export function ChainTableBody({
 									label={`Select everything born in ${group.label ?? "unlabeled"}`}
 								/>
 								<Expander open={open} onClick={() => onToggleCluster(group.key)} testid={`cluster-toggle-${group.key}`} label={`Expand cluster ${group.label ?? "unlabeled"}`} />
-								<span className="flex shrink-0 items-center justify-center text-muted-foreground">
-									{open ? <BookOpenIcon className="size-3.5" /> : <BookIcon className="size-3.5" />}
-								</span>
+								<button type="button" data-source-icon data-testid={`source-icon-${group.key}`} aria-expanded={open} aria-label={`Expand source ${group.label ?? "unlabeled"}`}
+									onClick={() => onToggleCluster(group.key)} className="flex h-5 w-3.5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+									{open ? <BookOpenIcon className="size-3.5 shrink-0" /> : <BookIcon className="size-3.5 shrink-0" />}
+								</button>
 								{onOrganizationChange && group.birth && group.kind !== null
 									? <EditableSourceName name={group.label ?? ""} onSave={(name) => onOrganizationChange({ action: "rename-source", id: group.birth!, name })} />
 									: <span className="min-w-0 flex-1 truncate text-sm font-medium">{group.label ?? <span className="text-muted-foreground/60">unlabeled</span>}</span>}
@@ -411,7 +412,7 @@ export function ChainTableBody({
 								<span className="w-20 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
 									{group.newestCreatedAt.slice(0, 10)}
 								</span>
-							</div>
+							</SourceDragRow>
 
 							{/* The chain rows — clearly indented under the folder
 							    (owner ruling); visible only when the cluster is open
@@ -525,6 +526,7 @@ export function ChainTableBody({
 										</div>
 									);
 								})}
+							<div data-testid={`source-separator-${group.key}`} className="pointer-events-none absolute bottom-[-1px] right-0 border-b border-border/60" style={{ left: depth === 0 ? 0 : 1 }} />
 						</div>
 					);
 				}} />
