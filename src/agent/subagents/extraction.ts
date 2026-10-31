@@ -553,7 +553,8 @@ exists anywhere in the graph. Additional tools are for a specific missing candid
 not for confirming every negative judgment. A fresh find_candidates search can add alternative wording; nextCursor
 continues its fixed query. Once a finding is decided, revisit it only if another lookup actually supplies new evidence.
 
-Finish with ONE submit_review call: { "links": [{ "id": <finding id>, "linkTo": <existing record id> }] }.
+Complete this task by CALLING the submit_review TOOL with its links argument. A text message, including JSON
+printed as text, does not submit a review. Each link supplies the finding's id and the existing record's id as linkTo.
 Include only useful matches to existing records you have seen. Omitted findings become new nodes; use "links": []
 when none match. Do not restate findings, invent relations, or justify verdicts in the output. The merger retains the
 existing record's name and statement and adds the incoming wording as an alias with its provenance.`;

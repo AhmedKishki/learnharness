@@ -2112,6 +2112,8 @@ describe("digest-aware serialized extraction (the extractor is the assembler)", 
 				assert.ok(!system.toolsAdded?.some((tool) => tool.name === "find"));
 				const instructions = typeof system.content === "string" ? system.content : system.content.map((part) => part.text).join("\n");
 				assert.match(instructions, /REVIEW THE PROVIDED RECORDS/);
+				assert.match(instructions, /CALLING the submit_review TOOL/);
+				assert.match(instructions, /JSON\s+printed as text, does not submit a review/);
 				assert.match(instructions, /statement AND its matched aliases are accepted knowledge/);
 				assert.doesNotMatch(instructions, /WHOLE proposition|majority of its clauses/);
 				const view = capturedView(context);
