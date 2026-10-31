@@ -1459,10 +1459,10 @@ describe("the extractor redesign (owner, 2026-09-30): chains are the deliverable
 		assert.ok(NOTES_EXTRACTOR_INSTRUCTIONS.startsWith(NOTES_PREAMBLE));
 		for (const prompt of [EXTRACTOR_INSTRUCTIONS, NOTES_EXTRACTOR_INSTRUCTIONS]) {
 			for (const section of Object.values(EXTRACTION_CORE)) assert.ok(prompt.includes(section));
-			assert.match(prompt, /THE GOAL: uncover the source's CORE IDEAS/);
-			assert.match(prompt, /everything derives from the foundations/);
-			assert.match(prompt, /what a reference on it would teach/);
 		}
+		assert.match(EXTRACTOR_INSTRUCTIONS, /THE GOAL: uncover the source's CORE IDEAS/);
+		assert.match(EXTRACTOR_INSTRUCTIONS, /everything derives from the foundations/);
+		assert.match(EXTRACTOR_INSTRUCTIONS, /what a reference on it would teach/);
 
 		// THE ANCHOR RULE (owner, 2026-10-13) is SESSION-ONLY: the exact
 		// sentence rides the session instructions; the notes
@@ -1490,21 +1490,89 @@ describe("the extractor redesign (owner, 2026-09-30): chains are the deliverable
 		}
 	});
 
-	it("preserves both complete system prompts byte-for-byte across the structural split", () => {
-		// SHA-256 snapshots of the complete UTF-8 prompts before this refactor,
-		// including every newline, preamble and the session-only anchor rule.
+	it("preserves the complete teaching-session prompt byte-for-byte", () => {
+		// Original UTF-8 snapshot, including every newline, preamble and the
+		// session-only anchor rule. Notes-only changes must not alter it.
 		assert.equal(
 			createHash("sha256").update(EXTRACTOR_INSTRUCTIONS, "utf8").digest("hex"),
 			"a8bddd7d47130ed5e39ffe7d8d0ed6efdd6b30407d52cd9838e7be2e465089a6",
 		);
-		assert.equal(
-			createHash("sha256").update(NOTES_EXTRACTOR_INSTRUCTIONS, "utf8").digest("hex"),
-			"790b16339ea386c28f7f06d9fdea6c4dbba4399c7154b17251855405e85f2fe1",
-		);
+	});
+
+	it("the notes framing records knowledge without requiring a foundational reconstruction", () => {
+		const notes = NOTES_EXTRACTOR_INSTRUCTIONS.replace(/\s+/g, " ");
+		assert.ok(notes.includes("THE GOAL: bring the knowledge in these notes into the learner’s knowledge graph. Notes may contain definitions, formulas, facts, arguments, or outlines without forming a complete lesson. Report the substantive ideas and the reasoning the notes support. A useful representation of this material is the deliverable, not a reconstruction of the subject from its foundations."));
+		assert.ok(notes.includes("Keep the meaningful definitions, formulas, claims, and explanations, including ideas that have no derivation. Use chains for reasoning the notes give, including direct inferences from their stated relationships. A sketch need not spell out every intermediate step, but a topic outline or component dependency alone is not a derivation. Where the notes just state an idea, record it as a proposition rather than constructing an argument for it. Select enough detail to preserve the knowledge, without expanding the note into a full treatment of the subject."));
+		assert.doesNotMatch(notes, /source teaches by arguing|everything derives from the foundations|An idea earns its place only|what a reference on it would teach/);
+		assert.match(notes, /Each chain is premises that JOINTLY entail a conclusion/);
+		assert.match(notes, /"chains": \[\] when the source makes no arguments/);
+	});
+
+	it("the session runner still receives the unchanged teaching-session instructions", async () => {
+		const { chatId } = fixtureChat();
+		let calls = 0;
+		const pipeline = createExtractionPipeline({
+			chatStore,
+			graphStore: memoryLedgers(),
+			extractor: fauxEngine([(context) => {
+				calls++;
+				const system = context.messages.find((message) => message.role === "system");
+				assert.ok(system && system.role === "system");
+				const instructions = typeof system.content === "string" ? system.content : system.content.map((part) => part.text).join("\n");
+				assert.equal(instructions, EXTRACTOR_INSTRUCTIONS);
+				return fauxAssistantMessage([fauxToolCall("submit_findings", FINDINGS, { id: "session-findings" })], { stopReason: "toolUse" });
+			}]),
+			auditor: submitModel("submit_review", { links: [] }),
+		});
+		assert.deepEqual(await pipeline.runExtraction(chatId), { nodes: 2, chains: 1 });
+		assert.equal(calls, 1);
 	});
 });
 
 describe("the notes front door (importNotes — format-agnostic)", () => {
+	// These faux responses verify prompt routing and the unchanged wire/merge
+	// contracts, not whether a real model follows the new instructions.
+	for (const example of [
+		{
+			label: "standalone definitions",
+			text: "Vim starts in Normal mode, where keys are commands.",
+			findings: NOTES_FINDINGS,
+			expected: { nodes: 1, chains: 0 },
+		},
+		{
+			label: "a supported derivation sketch",
+			text: "Inner-product spaces ⊂ normed spaces ⊂ metric spaces.",
+			findings: {
+				propositions: [
+					{ id: "p1", name: "Inner-product spaces are normed", statement: "Every inner-product space is a normed space.", aliases: [] },
+					{ id: "p2", name: "Normed spaces are metric", statement: "Every normed space is a metric space.", aliases: [] },
+					{ id: "p3", name: "Inner-product spaces are metric", statement: "Every inner-product space is a metric space.", aliases: [] },
+				],
+				chains: [{ premises: ["p1", "p2"], conclusion: "p3" }],
+			},
+			expected: { nodes: 3, chains: 1 },
+		},
+	]) {
+		it(`the notes runner receives the notes-specific instructions and accepts ${example.label}`, async () => {
+			let calls = 0;
+			const pipeline = createExtractionPipeline({
+				chatStore,
+				graphStore: memoryLedgers(),
+				extractor: fauxEngine([(context) => {
+					calls++;
+					const system = context.messages.find((message) => message.role === "system");
+					assert.ok(system && system.role === "system");
+					const instructions = typeof system.content === "string" ? system.content : system.content.map((part) => part.text).join("\n");
+					assert.equal(instructions, NOTES_EXTRACTOR_INSTRUCTIONS);
+					return fauxAssistantMessage([fauxToolCall("submit_findings", example.findings, { id: "notes-findings" })], { stopReason: "toolUse" });
+				}]),
+				auditor: submitModel("submit_review", { links: [] }),
+			});
+			assert.deepEqual(await pipeline.importNotes({ filePath: `synthetic-${example.label}.txt`, text: example.text }), example.expected);
+			assert.equal(calls, 1);
+		});
+	}
+
 	it("imports raw notes end to end: source record, file-scoped provenance", async () => {
 		const ledgers = memoryLedgers();
 		const seen: { kind?: string; label?: string }[] = [];
@@ -2073,9 +2141,9 @@ describe("digest-aware serialized extraction (the extractor is the assembler)", 
 		assert.match(EXTRACTION_CORE.entailment, /[Ee]ntailment is the\s+only link that earns a\s+chain/);
 		assert.match(EXTRACTION_CORE.continuation, /build\s+on it\. Reference an existing idea by its id/);
 		assert.match(EXTRACTION_CORE.submission, /OR existing ids from THE GRAPH SO FAR, verbatim/);
+		assert.match(EXTRACTOR_INSTRUCTIONS, /THE GOAL: uncover the source's CORE IDEAS and show how everything derives from the foundations/);
+		assert.match(EXTRACTOR_INSTRUCTIONS, /examples,\s+notation glosses, and restatements that no argument needs are not core ideas/);
 		for (const prompt of [EXTRACTOR_INSTRUCTIONS, NOTES_EXTRACTOR_INSTRUCTIONS]) {
-			assert.match(prompt, /THE GOAL: uncover the source's CORE IDEAS and show how everything derives from the foundations/);
-			assert.match(prompt, /examples,\s+notation glosses, and restatements that no argument needs are not core ideas/);
 			for (const section of Object.values(EXTRACTION_CORE)) assert.ok(prompt.includes(section));
 		}
 		assert.match(SESSION_PREAMBLE, /building on everything already extracted from this source/);

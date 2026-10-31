@@ -432,8 +432,8 @@ function composeExtractionInstructions(preamble: string, goal: string, selection
 	return `${preamble}\n\n${goal}\n${EXTRACTION_CORE.entailment}\n\n${EXTRACTION_CORE.knowledge}\n\n${selection} ${EXTRACTION_CORE.standalone}\n\n${EXTRACTION_CORE.continuation}\n\n${EXTRACTION_CORE.submission}`;
 }
 
-// These front doors deliberately own separate copies of the goal and selection
-// wording. They start identical; a later notes-only change need not affect sessions.
+// Each front door owns its goal and selection wording independently of the
+// shared contracts: notes need not be a complete, argument-driven lesson.
 export const EXTRACTOR_INSTRUCTIONS = `${composeExtractionInstructions(
 	SESSION_PREAMBLE,
 	`THE GOAL: uncover the source's CORE IDEAS and show how everything derives from the foundations. The
@@ -446,12 +446,16 @@ notation glosses, and restatements that no argument needs are not core ideas.`,
 
 export const NOTES_EXTRACTOR_INSTRUCTIONS = composeExtractionInstructions(
 	NOTES_PREAMBLE,
-	`THE GOAL: uncover the source's CORE IDEAS and show how everything derives from the foundations. The
-source teaches by arguing — ideas worked out from other ideas, down to a foundation the rest stands on.
-Your deliverable is twofold: the core ideas themselves, and the chains of reasoning that derive them.`,
-	`Extract the load-bearing ideas of the subject — what a reference on it would teach — not the full run
-of the discourse. An idea earns its place only when the source's arguments run through it — examples,
-notation glosses, and restatements that no argument needs are not core ideas.`,
+	`THE GOAL: bring the knowledge in these notes into the learner’s knowledge graph. Notes may contain
+definitions, formulas, facts, arguments, or outlines without forming a complete lesson. Report the
+substantive ideas and the reasoning the notes support. A useful representation of this material is
+the deliverable, not a reconstruction of the subject from its foundations.`,
+	`Keep the meaningful definitions, formulas, claims, and explanations, including ideas that have no
+derivation. Use chains for reasoning the notes give, including direct inferences from their stated
+relationships. A sketch need not spell out every intermediate step, but a topic outline or component
+dependency alone is not a derivation. Where the notes just state an idea, record it as a proposition
+rather than constructing an argument for it. Select enough detail to preserve the knowledge, without
+expanding the note into a full treatment of the subject.`,
 );
 
 // ── the same-source digest (owner, 2026-09-30 evening) ──
