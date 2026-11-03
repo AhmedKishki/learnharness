@@ -333,7 +333,9 @@ export function createProberTools(
 				// context). Same user-toggle filtering as the teacher; research
 				// remains available without a search-provider key.
 				...(jobs.research ? { research: jobs.research } : {}),
-				pdf: jobs.pdf!,
+				// `document` (ebook-hero) is what the prober is offered now; `pdf`
+				// stays defined in jobTools but is no longer put in any registry.
+				document: jobs.document!,
 				// The map reader (wave 7): present only when the settings gate
 				// opened.
 				...(ctx.graphStore
@@ -443,6 +445,14 @@ export function createTeacherTools(
 	// two differently-typed literals collapses into an unusable union type.
 	const quizzing: Record<string, AgentTool<any>> =
 		mechanics === "free" ? { explain: teachExplainToolFor(ctx) } : { quiz: teachQuizToolFor(ctx) };
+	// `document` (ebook-hero) replaces `pdf` in what the teacher is offered;
+	// `pdf` stays defined in jobTools but is left out here.
+	const { pdf: _pdf, ...offeredJobs } = jobTools({
+		chatId: ctx.chatId,
+		jobStore: ctx.jobStore,
+		spawn: ctx.spawn,
+		searchAvailable: ctx.searchAvailable,
+	});
 	// healToolRecord — same standard as the prober's registry (above).
 	return healToolRecord(
 		filterEnabledTools(
@@ -458,7 +468,7 @@ export function createTeacherTools(
 			find: findTool,
 			grep: grepTool,
 			...planTools(ctx),
-			...jobTools({ chatId: ctx.chatId, jobStore: ctx.jobStore, spawn: ctx.spawn, searchAvailable: ctx.searchAvailable }),
+			...offeredJobs,
 		},
 		withoutMechanics(enabled),
 		),

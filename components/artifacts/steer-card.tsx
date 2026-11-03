@@ -1,11 +1,11 @@
 "use client";
 
 import { CheckIcon, CircleX } from "lucide-react";
-import type { PdfResult, ResearchResult, SubagentArtifactData } from "@/src/core";
+import type { DocumentResult, PdfResult, ResearchResult, SubagentArtifactData } from "@/src/core";
 import type { LhViewMessage } from "@/src/core";
 import { isSubagentFailure } from "@/src/core";
 import { DemoOutputCard } from "@/components/artifacts/demo-card";
-import { PdfBriefCard, ResearchBriefCard } from "@/components/artifacts/job-card";
+import { DocumentBriefCard, PdfBriefCard, ResearchBriefCard } from "@/components/artifacts/job-card";
 import { VisualOutputCard } from "@/components/artifacts/visual-card";
 
 /**
@@ -55,6 +55,12 @@ export function SubagentSteerCard({ message }: { message: LhViewMessage }) {
 			) : (
 				<PdfCompleteBadge result={data.result as PdfResult} />
 			);
+		case "document":
+			return isSubagentFailure("document", data.result as DocumentResult) ? (
+				<DocumentBriefCard output={data.result} />
+			) : (
+				<DocumentCompleteBadge result={data.result as DocumentResult} />
+			);
 		case "demo":
 			return <DemoOutputCard output={data.result} messageId={message.id} initialInverted={data.ui?.inverted ?? false} />;
 		case "visual":
@@ -99,6 +105,26 @@ function PdfCompleteBadge({ result }: { result: PdfResult }) {
 			</summary>
 			<div className="mt-2">
 				<PdfBriefCard output={result} />
+			</div>
+		</details>
+	);
+}
+
+/** The PDF badge's twin for the document reader: the same quiet one-liner
+ * with the brief in a collapsed details. No page count — the brief cites
+ * locators, not pages. */
+function DocumentCompleteBadge({ result }: { result: DocumentResult }) {
+	return (
+		<details data-testid="document-complete-badge" className="group w-full text-xs text-muted-foreground">
+			<summary className="flex cursor-pointer select-none list-none items-center gap-2 [&::-webkit-details-marker]:hidden">
+				<CheckIcon className="size-3.5" />
+				<span className="font-medium uppercase tracking-wide">Document</span>
+				<span>reading complete</span>
+				<span className="ml-1 text-xs text-muted-foreground/70 group-open:hidden">view brief</span>
+				<span className="ml-1 hidden text-xs text-muted-foreground/70 group-open:inline">hide brief</span>
+			</summary>
+			<div className="mt-2">
+				<DocumentBriefCard output={result} />
 			</div>
 		</details>
 	);

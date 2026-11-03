@@ -66,6 +66,15 @@ export const pdfInputSchema = Type.Object({
 	}),
 });
 
+export const documentInputSchema = Type.Object({
+	path: Type.String({ description: "Path to the learner's PDF or EPUB (relative or absolute), exactly as they gave it." }),
+	question: Type.String({
+		description:
+			"What you need from the document — the specific content, explanation, or answer to extract and brief. " +
+			"The reader sees NOTHING else of the lesson.",
+	}),
+});
+
 /**
  * The per-call dispatch: create the job (idempotent by toolCallId), fire the
  * runner, and return the ack. Shared by all three tools — only kind differs.
@@ -96,6 +105,10 @@ const PDF_ACK =
 	"This call is fire-and-forget: continue your turn and keep teaching — do not wait, poll, or mention waiting. " +
 	"The document brief arrives as a new message when ready; weave it into the lesson and cite its pages.";
 
+const DOCUMENT_ACK =
+	"This call is fire-and-forget: continue your turn and keep teaching — do not wait, poll, or mention waiting. " +
+	"The document brief arrives as a new message when ready; weave it into the lesson and cite where it comes from.";
+
 const RESEARCH_DESCRIPTION =
 	"Dispatch a background web-research agent: fact verification, current data, or niche specifics you are not certain about. " +
 	"The call is ASYNC and fire-and-forget — it resolves immediately and your turn continues; the research brief arrives later " +
@@ -119,6 +132,11 @@ const PDF_DESCRIPTION =
 	"and you need its CONTENT for the lesson. The call is ASYNC and fire-and-forget — it resolves immediately and your turn " +
 	"continues; the brief arrives later as a new message. For quick looks at plain text or image files, use the read tool " +
 	"directly instead of dispatching.";
+const DOCUMENT_DESCRIPTION =
+	"Dispatch a background sub-agent that SEARCHES and READS a learner-provided PDF or EPUB on your behalf and returns a brief that " +
+	"cites where in the document each claim comes from. Use it when the learner gives you a book or paper path and you need its " +
+	"CONTENT for the lesson. The call is ASYNC and fire-and-forget — it resolves immediately and your turn continues; the brief " +
+	"arrives later as a new message. For quick looks at plain text or image files, use the read tool directly instead of dispatching.";
 
 /**
  * Per-request job tool registry: each tool closes over the composition root's
@@ -162,6 +180,15 @@ export function jobTools(ctx: JobToolContext): Record<string, AgentTool<any>> {
 			parameters: pdfInputSchema,
 			execute: serverExecute("pdf", pdfInputSchema, (input, { toolCallId }) => dispatch(ctx, "pdf", toolCallId, PDF_ACK, input)),
 		},
+		document: {
+			name: "document",
+			label: "document",
+			description: DOCUMENT_DESCRIPTION,
+			parameters: documentInputSchema,
+			execute: serverExecute("document", documentInputSchema, (input, { toolCallId }) =>
+				dispatch(ctx, "document", toolCallId, DOCUMENT_ACK, input),
+			),
+		},
 	};
 }
 
@@ -169,3 +196,4 @@ export type ResearchInput = Static<typeof researchInputSchema>;
 export type DemoInput = Static<typeof demoInputSchema>;
 export type VisualInput = Static<typeof visualInputSchema>;
 export type PdfInput = Static<typeof pdfInputSchema>;
+export type DocumentInput = Static<typeof documentInputSchema>;

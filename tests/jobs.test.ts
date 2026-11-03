@@ -36,7 +36,9 @@ import {
 	isSubagentFailure,
 	steerDelivered,
 	type DemoResult,
+	type JobRecord,
 	type JobUsage,
+	type DocumentResult,
 	type PdfResult,
 	type ResearchResult,
 	type SubagentArtifactData,
@@ -70,6 +72,7 @@ import { persistTurn } from "../src/server/turn-service.ts";
 import { chatStore } from "../src/store/chats.ts";
 import { jobStore } from "../src/store/jobs.ts";
 import { createJobRunner, pdfModelOverride, researchModelOverride } from "../src/agent/subagents/runner.ts";
+import { jobTools } from "../src/agent/tools/jobs.ts";
 import { providerKeyMissing, type ModelSlotName } from "../src/core/settings.ts";
 import type { PiEngine } from "../src/agent/models.ts";
 import type { SearchProvider } from "../src/core/search.ts";
@@ -443,6 +446,35 @@ describe("steer helpers (contracts.ts)", () => {
 		// abort wording names the PDF job
 		const aborted = buildAbortSteer({ id: "ja", kind: "pdf", toolCallId: "ca" });
 		assert.ok(aborted.content.includes("PDF reading job"));
+	});
+
+	it("document steers: a located brief on success, Document failed: shape on failure, its own abort wording", () => {
+		const doc: DocumentResult = {
+			path: "/home/x/alice.epub",
+			question: "q?",
+			brief: "The Queen wants heads cut off (ch. 8).",
+			pagesRead: [],
+			pagesConsulted: [],
+		};
+		const ok = buildSubagentSteer({ id: "jd", kind: "document", toolCallId: "cd" }, doc);
+		assert.equal(ok.content.startsWith("Document reading complete"), true);
+		assert.ok(ok.content.includes("/home/x/alice.epub"), "names the document");
+		assert.ok(ok.content.includes("The Queen wants heads cut off (ch. 8)."));
+		assert.ok(!ok.content.includes("figure") && !ok.content.includes("demo"), "not another kind's wording");
+		assert.equal((ok.details as { kind: string }).kind, "document");
+		assert.deepEqual((ok.details as { result: unknown }).result, doc);
+
+		assert.equal(isSubagentFailure("document", doc), false, "a brief with no page lists is not a failure");
+		assert.equal(isSubagentFailure("document", { ...doc, brief: "Document failed: ebook-hero is not installed" }), true);
+		const fail = buildSubagentSteer(
+			{ id: "jdf", kind: "document", toolCallId: "cdf" },
+			{ ...doc, brief: "Document failed: ebook-hero is not installed" },
+		);
+		assert.equal(fail.content.startsWith("Document failed: ebook-hero is not installed"), true);
+		assert.ok(fail.content.includes("flag the gap"));
+
+		const aborted = buildAbortSteer({ id: "jda", kind: "document", toolCallId: "cda" });
+		assert.ok(aborted.content.includes("document reading job"));
 	});
 });
 
@@ -867,6 +899,130 @@ describe("pdf runner (sources v0)", () => {
 
 		const steer = delivery.steers[0]!;
 		assert.ok(steer.content.includes("flag the gap"), "the teacher learns to flag the gap");
+	});
+});
+
+describe("document runner (ebook-hero over MCP)", () => {
+	const FAKE_BIN = path.join(import.meta.dirname, "fixtures", "mcp", "fake-ebook-hero.mjs");
+	const saved: Record<string, string | undefined> = {};
+	const ENV_KEYS = ["HOME", "USERPROFILE", "EBOOK_HERO_BIN", "FAKE_INDEX_FAIL"];
+	let home: string;
+	let book: string;
+
+	before(() => {
+		for (const key of ENV_KEYS) saved[key] = process.env[key];
+		home = fs.mkdtempSync(path.join(os.tmpdir(), "lh-document-job-home-"));
+		book = path.join(home, "alice.epub");
+		fs.writeFileSync(book, "not a real book: the fake never opens it");
+		process.env.HOME = home;
+		process.env.USERPROFILE = home;
+		process.env.EBOOK_HERO_BIN = FAKE_BIN;
+	});
+
+	after(() => {
+		for (const key of ENV_KEYS) {
+			if (saved[key] === undefined) delete process.env[key];
+			else process.env[key] = saved[key];
+		}
+		fs.rmSync(home, { recursive: true, force: true });
+	});
+
+	/** A document reader that consults the book once, then briefs. */
+	function documentReaderModel(): PiEngine {
+		return fauxEngine([
+			fauxAssistantMessage([fauxToolCall("mcp__ebook-hero__echo", { text: "queen" }, { id: "t1" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("The Queen wants heads cut off (ch. 8).")]),
+		]);
+	}
+
+	it("runJob completes a document job on the Cheap-slot model: brief on the record, located steer delivered", async () => {
+		const chat = chatStore.createChat("Test: document runner");
+		trackChat(chat.id);
+		const job = jobStore.createJob({ kind: "document", chatId: chat.id, toolCallId: "call-doc1" });
+		trackJob(job.id);
+
+		const delivery = fakeDeliver();
+		const runner = createJobRunner({ chatStore, jobStore, deliver: delivery.deliver });
+		researchModelOverride.current = documentReaderModel(); // the researcher role is the Cheap slot
+		try {
+			await runner.runJob(job.id, { path: book, question: "What does the Queen want?" });
+		} finally {
+			researchModelOverride.current = undefined;
+		}
+
+		const done = jobStore.getJob(job.id)!;
+		assert.equal(done.status, "done");
+		assert.equal(done.activity, "finished");
+		const result = done.result as DocumentResult;
+		assert.equal(result.path, book);
+		assert.equal(result.brief, "The Queen wants heads cut off (ch. 8).");
+
+		assert.equal(delivery.steers.length, 1, "one job, one steer");
+		const steer = delivery.steers[0]!;
+		assert.equal((steer.details as { kind: string }).kind, "document");
+		assert.ok(steer.content.startsWith("Document reading complete"));
+		assert.ok(steer.content.includes("heads cut off"), "steer text carries the brief");
+	});
+
+	it("a failed index lands the job as error with the Document failed brief, and the steer flags the gap", async () => {
+		const chat = chatStore.createChat("Test: document runner failure");
+		trackChat(chat.id);
+		const job = jobStore.createJob({ kind: "document", chatId: chat.id, toolCallId: "call-doc2" });
+		trackJob(job.id);
+
+		const delivery = fakeDeliver();
+		const runner = createJobRunner({ chatStore, jobStore, deliver: delivery.deliver });
+		researchModelOverride.current = documentReaderModel();
+		process.env.FAKE_INDEX_FAIL = "models could not be downloaded";
+		try {
+			await runner.runJob(job.id, { path: book, question: "anything" });
+		} finally {
+			researchModelOverride.current = undefined;
+			delete process.env.FAKE_INDEX_FAIL;
+		}
+
+		const done = jobStore.getJob(job.id)!;
+		assert.equal(done.status, "error");
+		assert.match(done.error ?? "", /models could not be downloaded/);
+		assert.match((done.result as DocumentResult).brief, /^Document failed:/);
+		assert.ok(delivery.steers[0]!.content.includes("flag the gap"), "the teacher learns to flag the gap");
+	});
+
+	it("the document tool records a document job, spawns it with the teacher's input, and acks fire-and-forget", async () => {
+		const chat = chatStore.createChat("Test: document dispatch");
+		trackChat(chat.id);
+		const spawned: Array<{ job: JobRecord; input: unknown }> = [];
+		const tools = jobTools({ chatId: chat.id, jobStore, spawn: (job, input) => void spawned.push({ job, input }) });
+		const input = { path: "Books/alice.epub", question: "What does the Queen want?" };
+
+		const out = await tools.document!.execute!("call-document-dispatch", input);
+
+		assert.equal(spawned.length, 1);
+		trackJob(spawned[0]!.job.id);
+		assert.equal(spawned[0]!.job.kind, "document");
+		assert.equal(spawned[0]!.job.toolCallId, "call-document-dispatch");
+		assert.deepEqual(spawned[0]!.input, input);
+		assert.match(String(out.details), /^Dispatched \(job .+\)\./);
+		assert.match(String(out.details), /fire-and-forget/);
+		assert.match(tools.document!.description, /PDF or EPUB/, "the teacher is told EPUBs work too");
+	});
+
+	it("with no Cheap-slot model the job is refused in the document shape, naming the missing slot", async () => {
+		const chat = chatStore.createChat("Test: document runner refusal");
+		trackChat(chat.id);
+		const job = jobStore.createJob({ kind: "document", chatId: chat.id, toolCallId: "call-doc3" });
+		trackJob(job.id);
+
+		const delivery = fakeDeliver();
+		const runner = createJobRunner({ chatStore, jobStore, deliver: delivery.deliver, engineFor: () => undefined });
+		await runner.runJob(job.id, { path: book, question: "anything" });
+
+		const done = jobStore.getJob(job.id)!;
+		assert.equal(done.status, "error");
+		const result = done.result as DocumentResult;
+		assert.match(result.brief, /^Document failed:.*missing: cheap/);
+		assert.equal(result.path, book);
+		assert.equal(result.question, "anything");
 	});
 });
 
@@ -1480,10 +1636,10 @@ describe("prompt composition", () => {
 		assert.ok(!prober.includes("predict → teach → check"), "the teaching cycle stays out of the prober");
 	});
 
-	it("the sources-v0 prompt lines compose: read/pdf doctrine in the teacher, the read line in the prober", () => {
+	it("the sources-v0 prompt lines compose: read/document doctrine in the teacher, the read line in the prober", () => {
 		const teacher = composeInstructions("teacher");
 		assert.ok(teacher.includes("Learner source files"), "the teacher carries the source-files section");
-		assert.ok(teacher.includes("brief with page citations"), "the pdf brief's citation duty is stated");
+		assert.ok(teacher.includes("brief citing where in it each claim comes from"), "the document brief's citation duty is stated");
 		const prober = composeInstructions("prober");
 		assert.ok(prober.includes("the `read` tool can inspect it directly"), "the prober knows it can read learner files");
 	});

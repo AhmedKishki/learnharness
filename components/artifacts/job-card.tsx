@@ -2,7 +2,7 @@
 
 import { DispatchCard } from "@/components/artifacts/dispatch-card";
 import { MessageResponse } from "@/components/ai-elements/message";
-import type { ArtifactPartProps, PdfResult, ResearchResult } from "@/src/core";
+import type { ArtifactPartProps, DocumentResult, PdfResult, ResearchResult } from "@/src/core";
 
 /**
  * The research tool-call box (contracts.ts "THE ASYNC PROTOCOL" §4).
@@ -68,6 +68,45 @@ export function PdfBriefCard({ output }: { output: unknown }) {
 					Pages consulted: {consultedList.join(", ")}
 				</div>
 			)}
+		</div>
+	);
+}
+
+/**
+ * The document dispatch box (ebook-hero) — the PdfJobCard idiom: the ack
+ * output drives a DispatchCard (live "Document reader" status via the jobs
+ * feed); the brief rides the steer message and renders under the
+ * Document-complete badge.
+ */
+export function DocumentJobCard({ part }: ArtifactPartProps) {
+	if (part.state !== "output-available") return null;
+	return <DispatchCard toolCallId={part.toolCallId} kind="document" />;
+}
+
+/**
+ * The document reading brief — markdown body only: its citations are
+ * locators inside the text, so there is no pages line (unlike PdfBriefCard).
+ * Exported: the steer card renders it under the Document-complete badge.
+ */
+export function DocumentBriefCard({ output }: { output: unknown }) {
+	const result = output as DocumentResult | undefined;
+	if (!result || typeof result.brief !== "string") {
+		return (
+			<div className="rounded-xl border bg-card p-4 text-sm text-muted-foreground">
+				Document reading completed, but the result could not be displayed.
+			</div>
+		);
+	}
+	const failed = result.brief.startsWith("Document failed");
+	return (
+		<div className="rounded-xl border bg-card p-4 text-card-foreground" data-testid="document-brief-card">
+			<div className="mb-1 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+				Document brief
+				{failed && <span className="rounded bg-red-500/15 px-1.5 py-0.5 text-red-500">failed</span>}
+			</div>
+			<div className="text-sm [&_p:first-child]:mt-0 [&_p:last-child]:mb-0">
+				<MessageResponse>{result.brief}</MessageResponse>
+			</div>
 		</div>
 	);
 }

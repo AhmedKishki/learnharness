@@ -196,6 +196,16 @@ describe("activity section render", () => {
 		assert.doesNotMatch(html, /activity-total-cost/, "the cost span is population, not decoration");
 	});
 
+	it("a running document job is named 'Document reader' and shows its tool activity", () => {
+		const html = renderToStaticMarkup(
+			<ActivitySection
+				feed={{ jobs: [job({ id: "jd", kind: "document", activity: "search", title: "Alice lesson" })], extractions: [] }}
+			/>,
+		);
+		assert.match(html, /Document reader/);
+		assert.doesNotMatch(html, /Sub-agent/, "not the unknown-kind fallback");
+	});
+
 	it("renders one blob per running process with cost, elapsed, and the abort affordance", () => {
 		const html = renderToStaticMarkup(
 			<ActivitySection

@@ -46,10 +46,10 @@ import { slugFilename } from "../components/artifacts/download.ts";
 import { chartSize } from "../components/session-overlay.tsx";
 import { SubagentSteerCard } from "../components/artifacts/steer-card.tsx";
 import { DispatchCard } from "../components/artifacts/dispatch-card.tsx";
-import { JobCard, PdfJobCard } from "../components/artifacts/job-card.tsx";
+import { DocumentJobCard, JobCard, PdfJobCard } from "../components/artifacts/job-card.tsx";
 import { ToolCallCard } from "../components/artifacts/tool-call-card.tsx";
 import { JobsContext } from "../components/jobs-context.ts";
-import { demoInputSchema, jobTools, pdfInputSchema, visualInputSchema } from "../src/agent/tools/jobs.ts";
+import { demoInputSchema, documentInputSchema, jobTools, pdfInputSchema, visualInputSchema } from "../src/agent/tools/jobs.ts";
 import { runDemoBuilder } from "../src/agent/subagents/demo-builder.ts";
 import { headlessOverride, type DemoRunResult, type HeadlessApi } from "../src/agent/subagents/headless.ts";
 import { createJobRunner, demoModelOverride, visualModelOverride } from "../src/agent/subagents/runner.ts";
@@ -351,6 +351,47 @@ describe("dispatch card rendering (the tool-call ack box)", () => {
 	});
 });
 
+describe("document dispatch card (ebook-hero)", () => {
+	const ackPart = { type: "tool-document", state: "output-available", toolCallId: "call-1", input: { path: "a.epub", question: "q" }, output: "Dispatched (job jd1)." };
+	function documentJob(over: Partial<JobRecord>): JobRecord {
+		return ({
+			id: "jd1",
+			kind: "document",
+			chatId: "c",
+			toolCallId: "call-1",
+			status: "running",
+			activity: "search",
+			createdAt: new Date(Date.now() - 5000).toISOString(),
+			updatedAt: new Date().toISOString(),
+			...over,
+		}) as JobRecord;
+	}
+
+	it("renders the live Document-reader card with the tool activity while the job runs", () => {
+		const html = renderToStaticMarkup(
+			<JobsContext.Provider value={[documentJob({})]}>
+				<DocumentJobCard part={ackPart as never} />
+			</JobsContext.Provider>,
+		);
+		assert.match(html, /Document reader/);
+		assert.match(html, /search/);
+	});
+
+	it("settles to the finished one-liner", () => {
+		const html = renderToStaticMarkup(
+			<JobsContext.Provider value={[documentJob({ status: "done", activity: "delivered" })]}>
+				<DocumentJobCard part={ackPart as never} />
+			</JobsContext.Provider>,
+		);
+		assert.match(html, /Document reader/);
+		assert.match(html, /finished/);
+	});
+
+	it("is the card registered for the document tool", () => {
+		assert.equal(artifactRenderers.document, DocumentJobCard);
+	});
+});
+
 describe("steer card rendering (the delivered artifact)", () => {
 	it("renders a sandboxed demo iframe (allow-scripts, NO allow-same-origin) with the bridge injected", () => {
 		const steer = buildSubagentSteer(
@@ -470,6 +511,39 @@ describe("steer card rendering (the delivered artifact)", () => {
 		assert.match(html, /failed/);
 		assert.match(html, /could not be opened/);
 		assert.ok(!html.includes("pdf-complete-badge"), "no complete badge for a failure");
+	});
+
+	it("renders a quiet Document-reading-complete one-liner whose collapsed details carries the brief", () => {
+		const steer = buildSubagentSteer(
+			{ id: "jdoc", kind: "document", toolCallId: "cdoc" },
+			{
+				path: "/Users/x/books/alice.epub",
+				question: "What does the Queen want?",
+				brief: "The Queen shouts **off with their heads** (ch. 8).",
+				pagesRead: [],
+				pagesConsulted: [],
+			},
+		);
+		const html = renderToStaticMarkup(<SubagentSteerCard message={projectNative([steer])[0] as never} />);
+		assert.match(html, /Document/);
+		assert.match(html, /reading complete/);
+		assert.match(html, /<details[^>]*data-testid="document-complete-badge"/, "a real disclosure like the PDF badge");
+		assert.ok(!/<details[^>]*open/.test(html), "collapsed by default");
+		assert.ok(html.includes("off with their heads"), "the brief rides inside the details");
+		assert.ok(!/read \d+ page/.test(html), "no page count: the brief cites locators, not pages");
+		assert.ok(!html.includes("/Users/x/books/alice.epub"), "the file path never renders");
+	});
+
+	it("renders the document failure brief with the failed badge when the reader FAILED", () => {
+		const steer = buildSubagentSteer(
+			{ id: "jdoc2", kind: "document", toolCallId: "cdoc2" },
+			{ path: "/tmp/a.epub", question: "q", brief: "Document failed: ebook-hero is not installed", pagesRead: [], pagesConsulted: [] },
+		);
+		const html = renderToStaticMarkup(<SubagentSteerCard message={projectNative([steer])[0] as never} />);
+		assert.match(html, /document-brief-card/);
+		assert.match(html, /failed/);
+		assert.match(html, /ebook-hero is not installed/);
+		assert.ok(!html.includes("document-complete-badge"), "no complete badge for a failure");
 	});
 
 	it("renders the visual failure note with no svg when the build FAILED", () => {
@@ -1000,8 +1074,8 @@ describe("tool + renderer registry wiring", () => {
 	it("demo and visual are SERVER-EXECUTED dispatch tools with the contract schemas", () => {
 		const { runner } = testRunner();
 		const tools = jobTools({ chatId: "chat_registry", jobStore, spawn: (job) => void runner.runJob(job.id) });
-		assert.deepEqual(Object.keys(tools).sort(), ["demo", "pdf", "research", "visual"]);
-		for (const name of ["demo", "visual", "research", "pdf"] as const) {
+		assert.deepEqual(Object.keys(tools).sort(), ["demo", "document", "pdf", "research", "visual"]);
+		for (const name of ["demo", "visual", "research", "pdf", "document"] as const) {
 			assert.equal(typeof (tools[name] as { execute?: unknown }).execute, "function", `${name} executes server-side — fire-and-forget ack per THE ASYNC PROTOCOL`);
 		}
 		assert.equal(Value.Check(demoInputSchema, { title: "T", brief: "b" }), true);
@@ -1011,6 +1085,9 @@ describe("tool + renderer registry wiring", () => {
 		assert.equal(Value.Check(pdfInputSchema, { path: "/tmp/doc.pdf", question: "q" }), true);
 		assert.equal(Value.Check(pdfInputSchema, { question: "q" }), false, "pdf requires a path");
 		assert.equal(Value.Check(pdfInputSchema, { path: "/tmp/doc.pdf" }), false, "pdf requires a question");
+		assert.equal(Value.Check(documentInputSchema, { path: "/tmp/alice.epub", question: "q" }), true);
+		assert.equal(Value.Check(documentInputSchema, { question: "q" }), false, "document requires a path");
+		assert.equal(Value.Check(documentInputSchema, { path: "/tmp/alice.epub" }), false, "document requires a question");
 	});
 
 	it("the artifact renderer registry maps demo/visual to the W6 cards", () => {

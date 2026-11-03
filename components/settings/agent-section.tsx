@@ -88,8 +88,9 @@ const SLOT_META: Record<ModelSlotName, { label: string; roster: string }> = {
 const SEARCH_ENGINES = ["tavily", "brave"] as const;
 
 /** The owner's final toggleable-tool list (confirm with the user before
- *  changing — the Teacher stream settled this 2026-09-19). */
-export const TOGGLE_TOOLS = ["research", "demo", "visual", "pdf"] as const;
+ *  changing — the Teacher stream settled this 2026-09-19). `document`
+ *  (ebook-hero) replaced `pdf` here: the teacher is no longer offered `pdf`. */
+export const TOGGLE_TOOLS = ["research", "demo", "visual", "document"] as const;
 
 const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 

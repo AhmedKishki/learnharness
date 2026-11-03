@@ -45,6 +45,7 @@ Secrets and machine-specific paths only. Model choice and thinking budgets are t
 | `GOOGLE_SEARCH_API_KEY` + `GOOGLE_CSE_ID` | researcher's `web_search` (Google Custom Search) |
 | `DEEPGRAM_API_KEY` | optional — dictation (STT token minting; audio streams browser→Deepgram, never through the server) |
 | `CHROME_PATH` | optional system Chrome fallback for demo verification; the app's own browser helper is primary (nothing is downloaded) |
+| `EBOOK_HERO_BIN` | optional path to the [ebook-hero](https://github.com/AhmedKishki/ebook-hero) program the teacher's `document` agent runs; default is `ebook-hero` on `PATH`. The first job on a new book indexes it first, which can take minutes and downloads about 270 MB of models once |
 
 The packaged desktop app takes keys from `userData/auth.json` (BYOK, mode 0600, read/written directly by the server via `LH_AUTH_FILE`). PDFs render natively with pdfjs/Skia; SVGs use resvg.
 

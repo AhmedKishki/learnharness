@@ -7,6 +7,8 @@ import {
 	piUsageToStep,
 	type DemoResult,
 	type DemoToolInput,
+	type DocumentResult,
+	type DocumentToolInput,
 	type JobKind,
 	type JobRecord,
 	type JobUsage,
@@ -27,6 +29,7 @@ import type { ModelRole } from "../../../config.ts";
 import { ROLE_SLOT, modelsNotConfigured, type ModelSlotName, type ProviderKeyMissing } from "../../core/settings.ts";
 import type { ChatStore, JobStore } from "../../core/ports.ts";
 import { runDemoBuilder } from "./demo-builder.ts";
+import { runDocumentAgent } from "./document-reader.ts";
 import { runPdfReaderAgent } from "./pdf-reader.ts";
 import { runResearcherAgent } from "./researcher.ts";
 import { runVisualMaker } from "./visual-maker.ts";
@@ -123,6 +126,9 @@ const KIND_ROLE: Record<JobKind, ModelRole> = {
 	demo: "demoBuilder",
 	visual: "visualMaker",
 	pdf: "pdfReader",
+	// The document reader reads text only (ebook-hero's tools return no images),
+	// so it runs on the Cheap slot via the researcher role, not Vision.
+	document: "researcher",
 };
 
 export function createJobRunner(deps: JobRunnerDeps): JobRunner {
@@ -186,6 +192,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 		demo: (jobId, engine, input, loop) => runDemoJob(jobId, engine, input, loop),
 		visual: (jobId, engine, input, loop) => runVisualJob(jobId, engine, input, loop),
 		pdf: (jobId, engine, input, loop) => runPdfJob(jobId, engine, input, loop),
+		document: (jobId, engine, input, loop) => runDocumentJob(jobId, engine, input, loop),
 	};
 
 	async function runJob(jobId: string, input?: JobToolInput): Promise<void> {
@@ -234,7 +241,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 							: {
 									path: typeof pdf?.path === "string" ? pdf.path : "",
 									question: typeof pdf?.question === "string" ? pdf.question : "",
-									brief: `PDF failed: ${reason}`,
+									brief: `${job.kind === "document" ? "Document" : "PDF"} failed: ${reason}`,
 									pagesRead: [],
 									pagesConsulted: [],
 								};
@@ -517,6 +524,45 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 		}
 	}
 
+	// ─── document reading (ebook-hero over MCP) ──────────────────────────────
+
+	async function runDocumentJob(
+		jobId: string,
+		model: PiEngine | undefined,
+		passedInput: JobToolInput | undefined,
+		loop: LoopContext,
+	): Promise<void> {
+		const ctx = jobContext(jobId);
+		if (!ctx) return;
+		const { job } = ctx;
+
+		const input = (passedInput ?? resolveInput(job, passedInput)) as DocumentToolInput | undefined;
+		const path = typeof input?.path === "string" && input.path.trim() ? input.path.trim() : "";
+		const question = typeof input?.question === "string" ? input.question : "";
+
+		try {
+			jobStore.updateJob(jobId, { activity: "reading document" });
+			const result = await runDocumentAgent(
+				{ path, question },
+				{
+					engine: model,
+					abortSignal: loop.abortSignal,
+					chatId: loop.chatId,
+					onUsage: (usage) => loop.onUsage(piUsageToStep(usage)),
+					onActivity: (line) => jobStore.updateJob(jobId, { activity: line }),
+				},
+			);
+			if (isDocumentFailure(result) && stillRunning(jobId))
+				jobStore.updateJob(jobId, { error: result.brief.replace(/^Document failed:\s*/i, "") });
+			await finishJob(jobId, result);
+		} catch (err) {
+			if (loop.abortSignal.aborted) return;
+			const reason = err instanceof Error ? err.message : String(err);
+			if (stillRunning(jobId)) jobStore.updateJob(jobId, { error: reason });
+			await finishJob(jobId, { path, question, brief: `Document failed: ${reason}`, pagesRead: [], pagesConsulted: [] });
+		}
+	}
+
 	return { runJob };
 }
 
@@ -534,6 +580,11 @@ function isVisualFailure(result: VisualResult): boolean {
 /** The pdf-reader's failure brief (mirrors the research failure shape). */
 function isPdfFailure(result: PdfResult): boolean {
 	return /^PDF failed:/i.test(result.brief);
+}
+
+/** The document reader's failure brief (same shape, its own prefix). */
+function isDocumentFailure(result: DocumentResult): boolean {
+	return /^Document failed:/i.test(result.brief);
 }
 
 /** The activity line shown in the UI: `web_search: "query"` / `web_fetch: host`. */

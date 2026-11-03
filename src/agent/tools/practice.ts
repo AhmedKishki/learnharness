@@ -243,7 +243,7 @@ export function practiceTools(ctx: PracticeToolContext): Record<string, AgentToo
 		find: findTool,
 		grep: grepTool,
 		...(jobs?.research ? { research: jobs.research } : {}),
-		...(jobs ? { pdf: jobs.pdf! } : {}),
+		...(jobs ? { document: jobs.document! } : {}),
 		...(ctx.graph ? proberGraphTools(ctx.graph) : {}),
 	});
 }

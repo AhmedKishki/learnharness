@@ -36,6 +36,7 @@ describe("streamingToolActivity (the turn-activity label)", () => {
 
 	it("job dispatch tools get their own labels; unknown tools stay generic", () => {
 		assert.equal(streamingToolActivity([msg("assistant", [toolPart("pdf", "input-streaming")])]), "Reading a PDF…");
+		assert.equal(streamingToolActivity([msg("assistant", [toolPart("document", "input-streaming")])]), "Reading a document…");
 		assert.equal(
 			streamingToolActivity([msg("assistant", [toolPart("mystery_tool", "input-streaming")])]),
 			"Working…",

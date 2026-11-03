@@ -283,6 +283,7 @@ const KIND_ICON: Record<JobKind, typeof SearchIcon> = {
 	demo: PlayIcon,
 	visual: PenToolIcon,
 	pdf: FileTextIcon, // sources v0 — type-forced entry (JobKind grew "pdf")
+	document: FileTextIcon, // type-forced entry (JobKind grew "document")
 };
 
 /** Abort states per blob id: pending (fired) / failed (backend absent). */
@@ -401,7 +402,9 @@ function ActivityBlobRow({
 						? "Figure maker"
 						: blob.jobKind === "pdf"
 							? "PDF reader"
-							: "Sub-agent";
+							: blob.jobKind === "document"
+								? "Document reader"
+								: "Sub-agent";
 	return (
 		<div
 			data-testid={`activity-blob-${blob.process}`}

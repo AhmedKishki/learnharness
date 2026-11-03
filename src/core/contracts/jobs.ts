@@ -12,7 +12,7 @@ import { newHandoffMessage } from "../native-messages.ts";
 
 // ─── Async sub-agent jobs (vision §2.5; plan.md Wave 0 protocol) ────────────
 
-export type JobKind = "research" | "demo" | "visual" | "pdf";
+export type JobKind = "research" | "demo" | "visual" | "pdf" | "document";
 export type JobStatus = "running" | "done" | "error";
 
 export interface JobRecord {
@@ -252,6 +252,14 @@ export interface PdfResult {
 	pagesConsulted: number[];
 }
 
+/** The document reader: the pdf-reader's replacement for the teacher, built
+ *  on ebook-hero's MCP tools (PDF or EPUB). It takes the same input and
+ *  returns the same shape so the unions below stay untouched; its brief
+ *  cites locators, not page lists, so both page lists come back empty.
+ *  Failure shape: /^Document failed:/i. */
+export type DocumentToolInput = PdfToolInput;
+export type DocumentResult = PdfResult;
+
 // ─── Sub-agent steer messages (THE ASYNC PROTOCOL §3–4) ─────────────────────
 //
 // Wave B (owner-approved 2026-09-26): steers are NATIVE record messages —
@@ -330,6 +338,10 @@ export function isSubagentFailure(
 		const r = result as PdfResult;
 		return /^PDF failed:/i.test(r.brief);
 	}
+	if (kind === "document") {
+		const r = result as DocumentResult;
+		return /^Document failed:/i.test(r.brief);
+	}
 	const r = result as VisualResult;
 	return typeof r.svg !== "string" || r.svg.length === 0;
 }
@@ -345,12 +357,16 @@ function steerText(kind: JobKind, result: ResearchResult | DemoResult | VisualRe
 			}. Fall back to explaining in prose; if the brief was the problem, re-call demo with a tighter one.`;
 		if (kind === "pdf")
 			return `${(result as PdfResult).brief}\n\nContinue with what you can establish from the session and flag the gap to the learner.`;
+		if (kind === "document")
+			return `${(result as DocumentResult).brief}\n\nContinue with what you can establish from the session and flag the gap to the learner.`;
 		return `The figure could not be made: ${(result as VisualResult).notes ?? "unknown reason"}. Fall back to prose or mermaid, or re-call visual with a tighter brief.`;
 	}
 	if (kind === "research")
 		return `Research complete — the researcher's full brief follows. Weave it into the lesson and cite its sources when you use its findings:\n\n${(result as ResearchResult).brief}`;
 	if (kind === "pdf")
 		return `PDF reading complete — the reader's brief on "${(result as PdfResult).path}" follows, with page citations. Weave it into the lesson and cite pages when you use it:\n\n${(result as PdfResult).brief}`;
+	if (kind === "document")
+		return `Document reading complete — the reader's brief on "${(result as DocumentResult).path}" follows, citing where in the document each claim comes from. Weave it into the lesson and cite those locations when you use it:\n\n${(result as DocumentResult).brief}`;
 	if (kind === "demo")
 		return `The demo "${(result as DemoResult).title}" is built, headlessly tested, and rendered in the lesson. Builder notes: ${
 			(result as DemoResult).notes ?? "(none)"
@@ -412,6 +428,8 @@ function abortText(kind: JobKind): string {
 		return "The demo job was aborted by the learner — no demo is coming. Acknowledge it in one line and teach the topic in prose instead (a re-dispatch is fine if the learner wants it).";
 	if (kind === "pdf")
 		return "The PDF reading job was aborted by the learner — no brief is coming. Acknowledge it in one line and continue without it (a re-dispatch is fine if the learner wants it).";
+	if (kind === "document")
+		return "The document reading job was aborted by the learner — no brief is coming. Acknowledge it in one line and continue without it (a re-dispatch is fine if the learner wants it).";
 	return "The figure job was aborted by the learner — no figure is coming. Acknowledge it in one line and teach without it (a re-dispatch is fine if the learner wants it).";
 }
 
