@@ -1644,6 +1644,21 @@ describe("prompt composition", () => {
 		assert.ok(prober.includes("the `read` tool can inspect it directly"), "the prober knows it can read learner files");
 	});
 
+	it("the teacher consults the document reader readily, one bounded question per call; the prober does not", () => {
+		const teacher = composeInstructions("teacher");
+		assert.ok(teacher.includes("Consult it whenever the lesson rests on his source"), "the teacher consults readily");
+		assert.ok(teacher.includes("One bounded question per call"), "the teacher asks bounded questions");
+		assert.ok(teacher.includes("Ask as many as you need"), "the teacher asks many");
+		const prober = composeInstructions("prober");
+		assert.ok(!prober.includes("Consult it whenever"), "the prober keeps using the reader sparingly");
+	});
+
+	it("the document tool asks every agent for one bounded question per call", () => {
+		const tool = jobTools({ chatId: "chat_x", jobStore, spawn: () => {} }).document!;
+		assert.match(tool.description, /ONE bounded question per call/);
+		assert.match(JSON.stringify(tool.parameters), /One bounded question about the document/);
+	});
+
 	it("the sources-v1 shared fragment composes into BOTH agents (find/ls/grep doctrine)", () => {
 		for (const kind of ["teacher", "prober"] as const) {
 			const instructions = composeInstructions(kind);

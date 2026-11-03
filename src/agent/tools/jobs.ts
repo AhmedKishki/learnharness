@@ -70,8 +70,8 @@ export const documentInputSchema = Type.Object({
 	path: Type.String({ description: "Path to the learner's PDF or EPUB (relative or absolute), exactly as they gave it." }),
 	question: Type.String({
 		description:
-			"What you need from the document — the specific content, explanation, or answer to extract and brief. " +
-			"The reader sees NOTHING else of the lesson.",
+			"One bounded question about the document — a single argument, definition, passage or claim to find and brief, " +
+			"not a summary of the whole document. The reader sees NOTHING else of the lesson.",
 	}),
 });
 
@@ -135,8 +135,10 @@ const PDF_DESCRIPTION =
 const DOCUMENT_DESCRIPTION =
 	"Dispatch a background sub-agent that SEARCHES and READS a learner-provided PDF or EPUB on your behalf and returns a brief that " +
 	"cites where in the document each claim comes from. Use it when the learner gives you a book or paper path and you need its " +
-	"CONTENT for the lesson. The call is ASYNC and fire-and-forget — it resolves immediately and your turn continues; the brief " +
-	"arrives later as a new message. For quick looks at plain text or image files, use the read tool directly instead of dispatching.";
+	"CONTENT for the lesson. Ask ONE bounded question per call — one argument, definition, passage or claim — never a summary " +
+	"of the whole document; for several questions, dispatch several calls. The call is ASYNC and fire-and-forget — it resolves " +
+	"immediately and your turn continues; the brief arrives later as a new message. For quick looks at plain text or image files, " +
+	"use the read tool directly instead of dispatching.";
 
 /**
  * Per-request job tool registry: each tool closes over the composition root's

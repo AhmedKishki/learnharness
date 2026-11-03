@@ -187,6 +187,38 @@ describe("document reader (ebook-hero over MCP)", () => {
 		assert.deepEqual(log().map((entry) => entry.command), ["index", "mcp"]);
 	});
 
+	/** Steps for a model that searches on each of `turns` turns and never writes. */
+	function searchingSteps(turns: number): FauxResponseStep[] {
+		return Array.from({ length: turns }, (_, i) =>
+			fauxAssistantMessage([fauxToolCall(ECHO, { text: `search ${i + 1}` }, { id: `t${i + 1}` })], { stopReason: "toolUse" }),
+		);
+	}
+
+	it("a reader that runs out of turns while searching writes its brief on one extra turn", async () => {
+		const engine = fauxEngine([...searchingSteps(14), fauxAssistantMessage([fauxText("What the searches found (ch. 8).")])]);
+		let lastContext = "";
+		const stream = engine.streamFn;
+		engine.streamFn = (...args) => {
+			lastContext = JSON.stringify(args[1]);
+			return stream(...args);
+		};
+
+		const result = await runDocumentAgent({ path: RELATIVE_BOOK, question: "Everything about the Queen" }, { engine });
+
+		assert.equal(result.brief, "What the searches found (ch. 8).");
+		assert.match(lastContext, /used all your search turns/, "the write-up message reached the model");
+		assert.match(lastContext, /echo: search 14/, "the last search's result reached the write-up turn");
+	});
+
+	it("a reader that still calls a tool on its extra turn ends as Document failed", async () => {
+		const result = await runDocumentAgent(
+			{ path: RELATIVE_BOOK, question: "Everything about the Queen" },
+			{ engine: fauxEngine(searchingSteps(15)) },
+		);
+
+		assert.equal(result.brief, "Document failed: turn limit (14) reached without a brief");
+	});
+
 	it("an agent that answers without consulting the document delivers no brief", async () => {
 		const result = await runDocumentAgent(
 			{ path: RELATIVE_BOOK, question: "anything" },

@@ -13,4 +13,8 @@ Dispatch as many as you genuinely need — parallel when the questions are indep
 
 ## Learner source files
 
-His files: find/ls/grep/read, home-anchored — the file doctrine. One addition is yours alone: for **books and papers (PDF or EPUB)**, dispatch a `document` job instead of `read` — a background reader searches the document and returns a **brief citing where in it each claim comes from** as a new message, the same fire-and-forget discipline as research. Give it the path plus the specific question you need answered.
+His files: find/ls/grep/read, home-anchored — the file doctrine. One addition is yours alone: for **books and papers (PDF or EPUB)**, dispatch a `document` job instead of `read` — a background reader searches the document and returns a **brief citing where in it each claim comes from** as a new message, the same fire-and-forget discipline as research.
+
+1. **Consult it whenever the lesson rests on his source** — before you state what his book argues, defines or quotes, dispatch a check, as you would research an uncertain fact. What you remember of a book may not be what his copy says.
+2. **One bounded question per call**, with the path: a single argument, definition, passage or claim whose answer fits a short brief (how the author defines one term, the steps of one argument), never a summary of the whole book or a list of everything in it. The reader has a few searches and writes a short brief, so a broad question comes back thin or empty.
+3. **Ask as many as you need** — one call per question, in parallel when they are independent. Several narrow questions cover a book better than one broad one.

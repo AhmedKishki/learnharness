@@ -22,6 +22,8 @@ import { runSubagent } from "./pi-run.ts";
  *  2. `ebook-hero mcp` over stdio, loaded with loadMcpTools; closed when the run ends.
  *  3. The agent loop on the Cheap model (the researcher role), tools = the
  *     server's own.
+ *  4. If it ends without a brief (out of turns mid-search), one extra turn
+ *     asks it to write up what it found; still nothing → "turn limit" failure.
  *
  * The program is $EBOOK_HERO_BIN, else `ebook-hero` on PATH. Every failure
  * lands as a "Document failed: …" brief — the teacher reads it and carries on.
@@ -44,6 +46,11 @@ inventing content. Tool outputs may be error strings; adapt.
 
 Your FINAL message is your entire deliverable: 2-6 sentences (or short sections) answering the
 question from the document, each claim cited by locator.`;
+
+/** Sent when the reader used every turn without writing its brief. */
+const WRITE_UP_MESSAGE =
+	"You have used all your search turns. Do not call any more tools. Write your final brief now from the tool results " +
+	"above, in the required format, and say which parts of the question you could not cover.";
 
 const SERVER_NAME = "ebook-hero";
 const MAX_TURNS = 14;
@@ -98,17 +105,17 @@ export async function runDocumentAgent(
 			"",
 			"Search the document per your instructions, then produce your final brief in the required format.",
 		].join("\n");
-		const { newMessages, text } = await runSubagent(Object.values(mcp.tools), {
-			role: "researcher",
-			prompt,
+		const tools = Object.values(mcp.tools);
+		const run = {
+			role: "researcher" as const,
 			engine: opts.engine,
 			systemPrompt: INSTRUCTIONS,
-			maxTurns: MAX_TURNS,
 			abortSignal: opts.abortSignal,
 			onUsage: opts.onUsage,
-			onToolStart: (toolName) => opts.onActivity?.(toolName.replace(`mcp__${SERVER_NAME}__`, "")),
+			onToolStart: (toolName: string) => opts.onActivity?.(toolName.replace(`mcp__${SERVER_NAME}__`, "")),
 			chatId: opts.chatId,
-		});
+		};
+		const { newMessages, text } = await runSubagent(tools, { ...run, prompt, maxTurns: MAX_TURNS });
 		const consulted = newMessages.some((m) => {
 			const message = m as { role?: string; isError?: boolean };
 			return message.role === "toolResult" && !message.isError;
@@ -116,7 +123,23 @@ export async function runDocumentAgent(
 		if (!consulted) {
 			return fail("the reader answered without consulting the document");
 		}
-		return { path: documentPath, question: input.question, brief: text.trim() || "(no brief text)", pagesRead: [], pagesConsulted: [] };
+		let brief = text.trim();
+		if (!brief) {
+			// Out of turns mid-search: one more turn to write up what it found.
+			// The tools stay declared so the request keeps the shape every
+			// provider already accepted; the message forbids using them.
+			opts.onActivity?.("writing brief");
+			const writeUp = await runSubagent(tools, {
+				...run,
+				messages: [...newMessages, { role: "user", content: WRITE_UP_MESSAGE, timestamp: Date.now() }],
+				maxTurns: 1,
+			});
+			brief = writeUp.text.trim();
+		}
+		if (!brief) {
+			return fail(`turn limit (${MAX_TURNS}) reached without a brief`);
+		}
+		return { path: documentPath, question: input.question, brief, pagesRead: [], pagesConsulted: [] };
 	} catch (error) {
 		return fail(error instanceof Error ? error.message : String(error));
 	} finally {
